@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1a1a1b" />
+    <title>TAKT | Tempo Asistanı</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero card">
+        <div class="logo-orb" aria-hidden="true">
+          <div class="runner"></div>
+          <div class="data-wave wave-a"></div>
+          <div class="data-wave wave-b"></div>
+        </div>
+        <h1>TAKT</h1>
+        <p>Ritim odaklı profesyonel aralıklı antrenman asistanı</p>
+      </header>
+
+      <main>
+        <section id="onboarding" class="card">
+          <h2>Başlangıç Profili</h2>
+          <form id="profile-form">
+            <div class="grid">
+              <label>İsim <input name="firstName" required /></label>
+              <label>Soyisim <input name="lastName" required /></label>
+              <label>Boy (cm) <input name="height" type="number" min="100" max="250" required /></label>
+              <label>Kilo (kg) <input name="weight" type="number" min="30" max="250" step="0.1" required /></label>
+            </div>
+            <p class="bmi-preview">Anlık VKİ: <strong id="bmi-preview">-</strong></p>
+            <button type="submit">Profili Kaydet</button>
+          </form>
+        </section>
+
+        <section id="dashboard" class="card hidden">
+          <h2 id="welcome"></h2>
+          <div class="metrics-row">
+            <article><h3>VKİ Durumu</h3><p id="bmi-status"></p></article>
+            <article><h3>Anlık Hız</h3><p class="mega" id="speed-display">0.0 <span>km/sa</span></p></article>
+            <article><h3>Anlık Kalori</h3><p id="calorie-display">0 kcal/dk</p></article>
+          </div>
+
+          <div class="sensor-row">
+            <button id="health-permission">İzinleri Etkinleştir</button>
+            <p id="sensor-status">Sensör durumu: Bekleniyor</p>
+            <div class="permission-grid">
+              <span id="perm-geolocation" class="chip">Konum: -</span>
+              <span id="perm-motion" class="chip">Hareket: -</span>
+              <span id="perm-notification" class="chip">Bildirim: -</span>
+            </div>
+          </div>
+
+          <div class="metrics-row sensor-metrics">
+            <article><h3>Adım (yaklaşık)</h3><p id="steps-display">0</p></article>
+            <article><h3>Nabız (BLE)</h3><p id="heart-rate-display">-- bpm</p></article>
+            <article><h3>Bluetooth</h3><button id="connect-hr" class="secondary">Nabız Sensörü Bağla</button></article>
+          </div>
+
+          <div class="settings-grid">
+            <label class="switch"><input id="voice-coach" type="checkbox" checked /> Sesli koç aktif</label>
+            <label class="switch"><input id="speed-announce" type="checkbox" checked /> Hız anonsu (20 sn)</label>
+          </div>
+
+          <section class="spotify card compact">
+            <h3>Spotify Kontrol</h3>
+            <label>Spotify Client ID
+              <input id="spotify-client-id" placeholder="Spotify app client id" />
+            </label>
+            <div class="action-row mobile-stack">
+              <button id="spotify-connect" class="secondary">Spotify Bağlan</button>
+              <button id="spotify-disconnect" class="secondary">Bağlantıyı Kes</button>
+            </div>
+            <p id="spotify-status" class="subtle">Spotify durumu: bağlı değil</p>
+            <p id="spotify-track" class="subtle">Çalan: -</p>
+            <div class="action-row mobile-stack">
+              <button id="spotify-prev" class="secondary">Önceki</button>
+              <button id="spotify-toggle" class="secondary">Oynat / Duraklat</button>
+              <button id="spotify-next" class="secondary">Sonraki</button>
+            </div>
+          </section>
+
+          <div class="workout-setup">
+            <h3>Interval Motoru</h3>
+            <div class="grid">
+              <label>Mod <select id="mode-select"></select></label>
+              <label>Toplam Süre (dk) <input id="duration-min" type="number" min="1" max="240" value="20" /></label>
+              <label class="checkbox"><input id="endless" type="checkbox" /> Süresiz mod</label>
+            </div>
+            <p id="mode-info" class="subtle"></p>
+
+            <div class="live-trainer">
+              <div>
+                <p class="subtle">Aktif Faz</p>
+                <p id="phase-indicator" class="phase">Hazır</p>
+              </div>
+              <div>
+                <p class="subtle">Faz Sayaç</p>
+                <p id="phase-countdown" class="timer">00:00</p>
+              </div>
+              <div>
+                <p class="subtle">Toplam Kalan</p>
+                <p id="total-remaining" class="timer">00:00</p>
+              </div>
+              <div>
+                <p class="subtle">Tur</p>
+                <p id="lap-count" class="timer">0</p>
+              </div>
+            </div>
+
+            <div class="action-row mobile-stack">
+              <button id="start-workout">Antrenmanı Başlat</button>
+              <button id="pause-workout" class="secondary" disabled>Duraklat</button>
+              <button id="resume-workout" class="secondary" disabled>Devam Et</button>
+              <button id="stop-workout" class="danger" disabled>Bitir</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="report" class="card hidden">
+          <h2>Antrenman Özeti</h2>
+          <div class="metrics-row">
+            <article><h3>Toplam Mesafe</h3><p id="total-distance">0 km</p></article>
+            <article><h3>Ortalama Hız</h3><p id="avg-speed">0 km/sa</p></article>
+            <article><h3>Yakılan Kalori</h3><p id="total-calories">0 kcal</p></article>
+          </div>
+          <canvas id="speed-chart" width="960" height="260" aria-label="Hız grafiği"></canvas>
+        </section>
+
+        <section class="card research">
+          <h2>15–20 sn Aralık Rehberi</h2>
+          <ul id="research-list"></ul>
+        </section>
+
+        <section class="card research">
+          <h2>Sonraki Sürüm Geliştirme Fikirleri</h2>
+          <ul id="ideas-list"></ul>
+        </section>
+      </main>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
