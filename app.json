@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "TAKT",
+    "slug": "takt-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a1b"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.takt.mobile",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Antrenman sırasında hız ve mesafe takibi için konum verisine ihtiyaç var."
+      }
+    },
+    "android": {
+      "package": "com.takt.mobile",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-location"
+    ],
+    "scheme": "taktmobile"
+  }
+}
