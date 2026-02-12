@@ -53,26 +53,25 @@ function formatTimer(seconds) {
   return `${m}:${sec}`;
 }
 
-function RingGauge({ valueText, subtitle, status, accent = "#23B6FF" }) {
+function RingGauge({ valueText, subtitle, status }) {
   return (
     <View style={styles.ringWrap}>
-      <View style={[styles.ringOuter, { borderColor: "rgba(34,146,214,0.25)" }]} />
-      <View style={[styles.ringActive, { borderColor: accent }]} />
+      <View style={styles.ringOuter} />
+      <View style={styles.ringActive} />
       <View style={styles.ringCenter}>
         <Text style={styles.ringSubtitle}>{subtitle}</Text>
         <Text style={styles.ringValue}>{valueText}</Text>
-        {status ? <Text style={styles.ringStatus}>{status}</Text> : null}
+        {!!status && <Text style={styles.ringStatus}>{status}</Text>}
       </View>
     </View>
   );
 }
 
 export default function App() {
-  const [screen, setScreen] = useState("onboarding"); // onboarding | home | workout
+  const [screen, setScreen] = useState("onboarding");
   const [profile, setProfile] = useState(null);
   const [form, setForm] = useState({ firstName: "", lastName: "", height: "", weight: "", age: "28" });
   const [settings, setSettings] = useState({ voiceCoach: true, speedAnnounce: true, spotifyClientId: "" });
-
   const [modeKey, setModeKey] = useState("yagYakimi");
   const [totalDurationMin, setTotalDurationMin] = useState("20");
 
@@ -84,7 +83,7 @@ export default function App() {
 
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [phase, setPhase] = useState("Hazır");
+  const [phase, setPhase] = useState("READY");
   const [phaseLeft, setPhaseLeft] = useState(0);
   const [sessionLeft, setSessionLeft] = useState(0);
   const [laps, setLaps] = useState(1);
@@ -99,6 +98,17 @@ export default function App() {
   const motivationRef = useRef(null);
   const spotifyPollRef = useRef(null);
   const phaseRef = useRef("high");
+  const speedRef = useRef(0);
+  const calorieRateRef = useRef(0);
+  const runningRef = useRef(false);
+  const pausedRef = useRef(false);
+
+  useEffect(() => {
+    speedRef.current = speedKmh;
+    calorieRateRef.current = caloriePerMin;
+    runningRef.current = running;
+    pausedRef.current = paused;
+  }, [speedKmh, caloriePerMin, running, paused]);
 
   const redirectUri = AuthSession.makeRedirectUri({ scheme: "taktmobile" });
   const [spotifyRequest, spotifyResponse, spotifyPromptAsync] = AuthSession.useAuthRequest(
@@ -120,10 +130,13 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [p, s] = await Promise.all([AsyncStorage.getItem(STORAGE.profile), AsyncStorage.getItem(STORAGE.settings)]);
-      if (s) setSettings((prev) => ({ ...prev, ...JSON.parse(s) }));
-      if (p) {
-        const parsed = JSON.parse(p);
+      const [storedProfile, storedSettings] = await Promise.all([
+        AsyncStorage.getItem(STORAGE.profile),
+        AsyncStorage.getItem(STORAGE.settings),
+      ]);
+      if (storedSettings) setSettings((prev) => ({ ...prev, ...JSON.parse(storedSettings) }));
+      if (storedProfile) {
+        const parsed = JSON.parse(storedProfile);
         setProfile(parsed);
         setScreen("home");
         startLocation(parsed.weight);
@@ -152,7 +165,6 @@ export default function App() {
     refreshSpotifyPlayback(spotifyToken);
     if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
     spotifyPollRef.current = setInterval(() => refreshSpotifyPlayback(spotifyToken), 5000);
-
     return () => {
       if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
     };
@@ -220,16 +232,16 @@ export default function App() {
   };
 
   const runPhase = (newPhase) => {
-    const m = MODES[modeKey];
-    const sec = newPhase === "high" ? m.high : m.low;
+    const mode = MODES[modeKey];
+    const sec = newPhase === "high" ? mode.high : mode.low;
     phaseRef.current = newPhase;
-    setPhase(`${newPhase === "high" ? "HIZLAN" : "YAVAŞLA"}`);
+    setPhase(newPhase === "high" ? "HIZLAN" : "YAVAŞLA");
     setPhaseLeft(sec);
     speak(newPhase === "high" ? "Hızlan" : "Yavaşla");
 
     if (phaseTimeoutRef.current) clearTimeout(phaseTimeoutRef.current);
     phaseTimeoutRef.current = setTimeout(() => {
-      if (!running || paused) return;
+      if (!runningRef.current || pausedRef.current) return;
       if (newPhase === "low") setLaps((v) => v + 1);
       runPhase(newPhase === "high" ? "low" : "high");
     }, sec * 1000);
@@ -250,7 +262,7 @@ export default function App() {
     runPhase("high");
 
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(0, v - 1));
+      setPhaseLeft((v) => Math.max(v - 1, 0));
       setSessionLeft((v) => {
         if (v <= 1) {
           stopWorkout();
@@ -258,30 +270,31 @@ export default function App() {
         }
         return v - 1;
       });
-      setDistanceKm((d) => d + speedKmh / 3600);
-      setTotalCalories((c) => c + caloriePerMin / 60);
+      setDistanceKm((d) => d + speedRef.current / 3600);
+      setTotalCalories((c) => c + calorieRateRef.current / 60);
     }, 1000);
 
     motivationRef.current = setInterval(() => {
       const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
       speak(msg);
-      if (settings.speedAnnounce) speak(`Hız ${speedKmh.toFixed(1)} kilometre saat`);
+      if (settings.speedAnnounce) speak(`Hız ${speedRef.current.toFixed(1)} kilometre saat`);
     }, 20000);
   };
 
   const pauseWorkout = () => {
-    if (!running) return;
+    if (!runningRef.current) return;
     setPaused(true);
     setPhase("DURAKLATILDI");
     stopWorkoutInternal();
   };
 
   const resumeWorkout = () => {
-    if (!running) return;
+    if (!runningRef.current) return;
     setPaused(false);
     runPhase(phaseRef.current);
+
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(0, v - 1));
+      setPhaseLeft((v) => Math.max(v - 1, 0));
       setSessionLeft((v) => {
         if (v <= 1) {
           stopWorkout();
@@ -289,9 +302,15 @@ export default function App() {
         }
         return v - 1;
       });
-      setDistanceKm((d) => d + speedKmh / 3600);
-      setTotalCalories((c) => c + caloriePerMin / 60);
+      setDistanceKm((d) => d + speedRef.current / 3600);
+      setTotalCalories((c) => c + calorieRateRef.current / 60);
     }, 1000);
+
+    motivationRef.current = setInterval(() => {
+      const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
+      speak(msg);
+      if (settings.speedAnnounce) speak(`Hız ${speedRef.current.toFixed(1)} kilometre saat`);
+    }, 20000);
   };
 
   const stopWorkout = () => {
@@ -396,36 +415,20 @@ export default function App() {
                 <TextInput placeholder="FIRST NAME" placeholderTextColor="#7d95a9" style={[styles.input, styles.half]} value={form.firstName} onChangeText={(t) => setForm((f) => ({ ...f, firstName: t }))} />
                 <TextInput placeholder="LAST NAME" placeholderTextColor="#7d95a9" style={[styles.input, styles.half]} value={form.lastName} onChangeText={(t) => setForm((f) => ({ ...f, lastName: t }))} />
               </View>
-
               <View style={styles.rowWrap}>
                 <TextInput placeholder="HEIGHT (cm)" placeholderTextColor="#7d95a9" keyboardType="numeric" style={[styles.input, styles.half]} value={form.height} onChangeText={(t) => setForm((f) => ({ ...f, height: t }))} />
                 <TextInput placeholder="WEIGHT (kg)" placeholderTextColor="#7d95a9" keyboardType="numeric" style={[styles.input, styles.half]} value={form.weight} onChangeText={(t) => setForm((f) => ({ ...f, weight: t }))} />
               </View>
-
               <TextInput placeholder="AGE" placeholderTextColor="#7d95a9" keyboardType="numeric" style={styles.input} value={form.age} onChangeText={(t) => setForm((f) => ({ ...f, age: t }))} />
-
-              <Pressable style={styles.btnPrimary} onPress={onSaveProfile}>
-                <Text style={styles.btnTextStrong}>INITIALIZE SYSTEM →</Text>
-              </Pressable>
+              <Pressable style={styles.btnPrimary} onPress={onSaveProfile}><Text style={styles.btnTextStrong}>INITIALIZE SYSTEM →</Text></Pressable>
             </View>
           </>
         )}
 
         {screen === "home" && profile && (
           <>
-            <View style={styles.topRow}>
-              <Text style={styles.logo}>⚡ TAKT</Text>
-              <View>
-                <Text style={styles.intervalText}>MODE SELECTED</Text>
-                <Text style={styles.intervalSub}>{mode.label.toUpperCase()} • OUTDOOR</Text>
-              </View>
-            </View>
-
-            <RingGauge
-              valueText={speedKmh.toFixed(1)}
-              subtitle="CURRENT SPEED"
-              status={`BMI ${bmi.toFixed(1)} / ${bmiCategory(bmi)}`}
-            />
+            <View style={styles.topRow}><Text style={styles.logo}>⚡ TAKT</Text><View><Text style={styles.intervalText}>MODE SELECTED</Text><Text style={styles.intervalSub}>{mode.label.toUpperCase()} • OUTDOOR</Text></View></View>
+            <RingGauge valueText={speedKmh.toFixed(1)} subtitle="CURRENT SPEED" status={`BMI ${bmi.toFixed(1)} / ${bmiCategory(bmi)}`} />
 
             <View style={styles.rowWrap}>
               {Object.entries(MODES).map(([key, m]) => (
@@ -436,17 +439,17 @@ export default function App() {
               ))}
             </View>
 
-            <View style={styles.card}> 
-              <Text style={styles.label}>Toplam Süre (dk)</Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={totalDurationMin} onChangeText={setTotalDurationMin} placeholder="20" placeholderTextColor="#7d95a9" />
-              <View style={styles.row}><Text style={styles.label}>Voice Coach</Text><Switch value={settings.voiceCoach} onValueChange={(v) => saveSettings({ ...settings, voiceCoach: v })} /></View>
-              <View style={styles.row}><Text style={styles.label}>Speed Announce</Text><Switch value={settings.speedAnnounce} onValueChange={(v) => saveSettings({ ...settings, speedAnnounce: v })} /></View>
-            </View>
-
             <View style={styles.metricsGrid}>
               <View style={styles.metricBox}><Text style={styles.metricNum}>{bpm || "--"}</Text><Text style={styles.metricLabel}>BPM</Text></View>
               <View style={styles.metricBox}><Text style={styles.metricNum}>{distanceKm.toFixed(2)}</Text><Text style={styles.metricLabel}>KM</Text></View>
               <View style={styles.metricBox}><Text style={styles.metricNum}>{totalCalories.toFixed(0)}</Text><Text style={styles.metricLabel}>KCAL</Text></View>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.label}>Toplam Süre (dk)</Text>
+              <TextInput style={styles.input} keyboardType="numeric" value={totalDurationMin} onChangeText={setTotalDurationMin} placeholder="20" placeholderTextColor="#7d95a9" />
+              <View style={styles.row}><Text style={styles.label}>Voice Coach</Text><Switch value={settings.voiceCoach} onValueChange={(v) => saveSettings({ ...settings, voiceCoach: v })} /></View>
+              <View style={styles.row}><Text style={styles.label}>Speed Announce</Text><Switch value={settings.speedAnnounce} onValueChange={(v) => saveSettings({ ...settings, speedAnnounce: v })} /></View>
             </View>
 
             <View style={styles.card}>
@@ -462,22 +465,13 @@ export default function App() {
               <Text style={styles.spotifyTrack}>{spotifyTrack}</Text>
             </View>
 
-            <Pressable style={styles.btnPrimary} onPress={startWorkout}>
-              <Text style={styles.btnTextStrong}>START WORKOUT</Text>
-            </Pressable>
+            <Pressable style={styles.btnPrimary} onPress={startWorkout}><Text style={styles.btnTextStrong}>START WORKOUT</Text></Pressable>
           </>
         )}
 
         {screen === "workout" && profile && (
           <>
-            <View style={styles.topRow}>
-              <Text style={styles.logo}>⚡ TAKT</Text>
-              <View>
-                <Text style={styles.intervalText}>INTERVAL {laps}</Text>
-                <Text style={styles.intervalSub}>{mode.tag}</Text>
-              </View>
-            </View>
-
+            <View style={styles.topRow}><Text style={styles.logo}>⚡ TAKT</Text><View><Text style={styles.intervalText}>INTERVAL {laps}</Text><Text style={styles.intervalSub}>{mode.tag}</Text></View></View>
             <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={formatTimer(sessionLeft)} />
 
             <View style={styles.metricsGrid}>
@@ -506,11 +500,7 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#071925" },
-  container: {
-    padding: 18,
-    gap: 14,
-    backgroundColor: "#071925",
-  },
+  container: { padding: 18, gap: 14, backgroundColor: "#071925" },
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   logo: { color: "#E8F6FF", fontSize: 34, fontWeight: "900", letterSpacing: 1.4 },
   subtitle: { color: "#86A8BE", fontSize: 20, textAlign: "center", marginBottom: 8, letterSpacing: 1.2 },
@@ -531,6 +521,7 @@ const styles = StyleSheet.create({
     height: 300,
     borderRadius: 150,
     borderWidth: 18,
+    borderColor: "rgba(34,146,214,0.25)",
   },
   ringActive: {
     position: "absolute",
