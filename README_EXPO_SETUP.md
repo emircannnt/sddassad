@@ -56,3 +56,11 @@ ve özellikle `createBundleReleaseJsAndAssets` bölümündeki ilk JS hata satır
 
 Spotify kontrolü için Spotify Developer panelinden bir app açıp `Client ID` girmeniz gerekir.
 
+
+## 7) Ekran akışı (istenen tasarım yapısı)
+
+- **Ekran 1 (Onboarding):** isim/soyisim/boy/kilo/yaş + dairesel VKİ görünümü
+- **Ekran 2 (Ana Sayfa):** mod seçimi, canlı hız kartı, Spotify kontrol alanı, Start butonu
+- **Ekran 3 (Antrenman):** büyük hız göstergesi + kalan süre + bpm/km/kcal + pause/resume/finish
+
+Bu akış doğrudan `App.js` içinde `screen` state’i ile yönetilir.

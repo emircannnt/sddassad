@@ -24,44 +24,70 @@ const STORAGE = {
 };
 
 const MODES = {
-  toparlanma: { label: "Toparlanma", high: 15, low: 20 },
-  yagYakimi: { label: "Yağ Yakımı", high: 20, low: 20 },
-  kondisyon: { label: "Kondisyon", high: 20, low: 15 },
-  hizEsigi: { label: "Hız Eşiği", high: 20, low: 15 },
-  maksimumGuc: { label: "Maksimum Güç", high: 15, low: 20 },
+  toparlanma: { label: "Toparlanma", high: 15, low: 20, tag: "RECOVERY" },
+  yagYakimi: { label: "Yağ Yakımı", high: 20, low: 20, tag: "FAT BURN" },
+  kondisyon: { label: "Kondisyon", high: 20, low: 15, tag: "CARDIO" },
+  hizEsigi: { label: "Hız Eşiği", high: 20, low: 15, tag: "THRESHOLD" },
+  maksimumGuc: { label: "Maksimum Güç", high: 15, low: 20, tag: "MAX POWER" },
 };
 
-const motivationPool = ["Çok iyi gidiyorsun!", "Hedefine az kaldı!", "Ritmini koru!", "Harika tempo!"];
+const motivationPool = ["Çok iyi gidiyorsun!", "Ritmi koru!", "Harikasın, devam!", "Hedefe yaklaştın!"];
 
-function bmiCategory(bmi) {
-  if (bmi < 18.5) return "Düşük";
-  if (bmi < 24.9) return "Fit / Normal";
-  if (bmi < 29.9) return "Fazla";
-  return "Yüksek";
-}
-
-const kcalPerMin = (speedKmh, kg) => {
-  const met = speedKmh < 5 ? 3 : speedKmh < 8 ? 6 : speedKmh < 11 ? 9 : 12;
+const bpmFromSpeed = (speed) => Math.round(Math.min(185, Math.max(95, 95 + speed * 4.2)));
+const caloriesFromSpeed = (speed, kg) => {
+  const met = speed < 5 ? 3 : speed < 8 ? 6 : speed < 11 ? 9 : 12;
   return (met * 3.5 * kg) / 200;
 };
 
+function bmiCategory(bmi) {
+  if (bmi < 18.5) return "LOW";
+  if (bmi < 24.9) return "FIT";
+  if (bmi < 29.9) return "AVG";
+  return "HIGH";
+}
+
+function formatTimer(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  const m = String(Math.floor(s / 60)).padStart(2, "0");
+  const sec = String(s % 60).padStart(2, "0");
+  return `${m}:${sec}`;
+}
+
+function RingGauge({ valueText, subtitle, status, accent = "#23B6FF" }) {
+  return (
+    <View style={styles.ringWrap}>
+      <View style={[styles.ringOuter, { borderColor: "rgba(34,146,214,0.25)" }]} />
+      <View style={[styles.ringActive, { borderColor: accent }]} />
+      <View style={styles.ringCenter}>
+        <Text style={styles.ringSubtitle}>{subtitle}</Text>
+        <Text style={styles.ringValue}>{valueText}</Text>
+        {status ? <Text style={styles.ringStatus}>{status}</Text> : null}
+      </View>
+    </View>
+  );
+}
+
 export default function App() {
+  const [screen, setScreen] = useState("onboarding"); // onboarding | home | workout
   const [profile, setProfile] = useState(null);
-  const [form, setForm] = useState({ firstName: "", lastName: "", height: "", weight: "" });
+  const [form, setForm] = useState({ firstName: "", lastName: "", height: "", weight: "", age: "28" });
   const [settings, setSettings] = useState({ voiceCoach: true, speedAnnounce: true, spotifyClientId: "" });
 
-  const [speedKmh, setSpeedKmh] = useState(0);
-  const [caloriePerMin, setCaloriePerMin] = useState(0);
-  const [distanceKm, setDistanceKm] = useState(0);
-
   const [modeKey, setModeKey] = useState("yagYakimi");
-  const [durationMin, setDurationMin] = useState("20");
-  const [endless, setEndless] = useState(false);
-  const [phase, setPhase] = useState("Hazır");
-  const [phaseLeft, setPhaseLeft] = useState(0);
-  const [remaining, setRemaining] = useState(0);
+  const [totalDurationMin, setTotalDurationMin] = useState("20");
+
+  const [speedKmh, setSpeedKmh] = useState(0);
+  const [distanceKm, setDistanceKm] = useState(0);
+  const [caloriePerMin, setCaloriePerMin] = useState(0);
+  const [totalCalories, setTotalCalories] = useState(0);
+  const [bpm, setBpm] = useState(0);
+
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [phase, setPhase] = useState("Hazır");
+  const [phaseLeft, setPhaseLeft] = useState(0);
+  const [sessionLeft, setSessionLeft] = useState(0);
+  const [laps, setLaps] = useState(1);
 
   const [spotifyToken, setSpotifyToken] = useState(null);
   const [spotifyTrack, setSpotifyTrack] = useState("-");
@@ -75,21 +101,14 @@ export default function App() {
   const phaseRef = useRef("high");
 
   const redirectUri = AuthSession.makeRedirectUri({ scheme: "taktmobile" });
-  const scopes = ["user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing"];
-
-  const spotifyDiscovery = useMemo(
-    () => ({ authorizationEndpoint: "https://accounts.spotify.com/authorize" }),
-    [],
-  );
-
   const [spotifyRequest, spotifyResponse, spotifyPromptAsync] = AuthSession.useAuthRequest(
     {
       clientId: settings.spotifyClientId?.trim() || "",
       responseType: AuthSession.ResponseType.Token,
-      scopes,
+      scopes: ["user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing"],
       redirectUri,
     },
-    spotifyDiscovery,
+    { authorizationEndpoint: "https://accounts.spotify.com/authorize" },
   );
 
   const bmi = useMemo(() => {
@@ -101,14 +120,14 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const rawProfile = await AsyncStorage.getItem(STORAGE.profile);
-      const rawSettings = await AsyncStorage.getItem(STORAGE.settings);
-      if (rawProfile) {
-        const parsed = JSON.parse(rawProfile);
+      const [p, s] = await Promise.all([AsyncStorage.getItem(STORAGE.profile), AsyncStorage.getItem(STORAGE.settings)]);
+      if (s) setSettings((prev) => ({ ...prev, ...JSON.parse(s) }));
+      if (p) {
+        const parsed = JSON.parse(p);
         setProfile(parsed);
+        setScreen("home");
         startLocation(parsed.weight);
       }
-      if (rawSettings) setSettings((prev) => ({ ...prev, ...JSON.parse(rawSettings) }));
     })();
   }, []);
 
@@ -117,16 +136,16 @@ export default function App() {
       const token = spotifyResponse.params?.access_token;
       if (token) {
         setSpotifyToken(token);
-        Alert.alert("Spotify", "Bağlantı başarılı.");
+        Alert.alert("Spotify", "Bağlandı");
       }
     }
   }, [spotifyResponse]);
 
   useEffect(() => {
     if (!spotifyToken) {
+      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
       setSpotifyTrack("-");
       setSpotifyPlaying(false);
-      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
       return;
     }
 
@@ -149,33 +168,37 @@ export default function App() {
 
   const speak = (text) => {
     if (!settings.voiceCoach) return;
-    Speech.speak(text, { language: "tr-TR", pitch: 1.08, rate: 1.0 });
+    Speech.speak(text, { language: "tr-TR", rate: 1, pitch: 1.05 });
+  };
+
+  const saveSettings = async (next) => {
+    setSettings(next);
+    await AsyncStorage.setItem(STORAGE.settings, JSON.stringify(next));
   };
 
   const startLocation = async (weight) => {
     const perm = await Location.requestForegroundPermissionsAsync();
-    if (perm.status !== "granted") {
-      Alert.alert("Konum izni gerekli", "Hız ve mesafe takibi için konum izni verin.");
-      return;
-    }
+    if (perm.status !== "granted") return;
 
     if (watchRef.current) watchRef.current.remove();
     watchRef.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1200, distanceInterval: 1 },
+      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 1 },
       (loc) => {
         const kmh = (loc.coords.speed || 0) * 3.6;
         setSpeedKmh(kmh);
-        setCaloriePerMin(kcalPerMin(kmh, weight));
+        setBpm(bpmFromSpeed(kmh));
+        setCaloriePerMin(caloriesFromSpeed(kmh, weight));
       },
     );
   };
 
-  const saveProfile = async () => {
+  const onSaveProfile = async () => {
     const next = {
       firstName: form.firstName.trim(),
       lastName: form.lastName.trim(),
       height: Number(form.height),
       weight: Number(form.weight),
+      age: Number(form.age),
     };
     if (!next.firstName || !next.lastName || !next.height || !next.weight) {
       Alert.alert("Eksik bilgi", "Lütfen tüm alanları doldurun.");
@@ -183,22 +206,8 @@ export default function App() {
     }
     setProfile(next);
     await AsyncStorage.setItem(STORAGE.profile, JSON.stringify(next));
-    startLocation(next.weight);
-  };
-
-  const runPhase = (newPhase) => {
-    const mode = MODES[modeKey];
-    const sec = newPhase === "high" ? mode.high : mode.low;
-    phaseRef.current = newPhase;
-    setPhase(`${newPhase === "high" ? "Hızlan" : "Yavaşla"} (${sec} sn)`);
-    setPhaseLeft(sec);
-    speak(newPhase === "high" ? "Hızlan" : "Yavaşla");
-
-    if (phaseTimeoutRef.current) clearTimeout(phaseTimeoutRef.current);
-    phaseTimeoutRef.current = setTimeout(() => {
-      if (!running || paused) return;
-      runPhase(newPhase === "high" ? "low" : "high");
-    }, sec * 1000);
+    await startLocation(next.weight);
+    setScreen("home");
   };
 
   const stopWorkoutInternal = () => {
@@ -210,39 +219,61 @@ export default function App() {
     motivationRef.current = null;
   };
 
+  const runPhase = (newPhase) => {
+    const m = MODES[modeKey];
+    const sec = newPhase === "high" ? m.high : m.low;
+    phaseRef.current = newPhase;
+    setPhase(`${newPhase === "high" ? "HIZLAN" : "YAVAŞLA"}`);
+    setPhaseLeft(sec);
+    speak(newPhase === "high" ? "Hızlan" : "Yavaşla");
+
+    if (phaseTimeoutRef.current) clearTimeout(phaseTimeoutRef.current);
+    phaseTimeoutRef.current = setTimeout(() => {
+      if (!running || paused) return;
+      if (newPhase === "low") setLaps((v) => v + 1);
+      runPhase(newPhase === "high" ? "low" : "high");
+    }, sec * 1000);
+  };
+
   const startWorkout = () => {
-    if (!profile) return Alert.alert("Profil gerekli", "Önce profil oluşturun.");
-    setDistanceKm(0);
+    if (!profile) return;
+    stopWorkoutInternal();
+    setScreen("workout");
     setRunning(true);
     setPaused(false);
-    setRemaining(Number(durationMin) * 60);
+    setDistanceKm(0);
+    setTotalCalories(0);
+    setLaps(1);
 
+    const totalSec = Math.max(60, Number(totalDurationMin || 20) * 60);
+    setSessionLeft(totalSec);
     runPhase("high");
+
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(v - 1, 0));
-      if (!endless) {
-        setRemaining((v) => {
-          if (v <= 1) {
-            stopWorkout();
-            return 0;
-          }
-          return v - 1;
-        });
-      }
+      setPhaseLeft((v) => Math.max(0, v - 1));
+      setSessionLeft((v) => {
+        if (v <= 1) {
+          stopWorkout();
+          return 0;
+        }
+        return v - 1;
+      });
       setDistanceKm((d) => d + speedKmh / 3600);
+      setTotalCalories((c) => c + caloriePerMin / 60);
     }, 1000);
 
     motivationRef.current = setInterval(() => {
       const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
       speak(msg);
-      if (settings.speedAnnounce) speak(`Anlık hız ${speedKmh.toFixed(1)} kilometre saat`);
+      if (settings.speedAnnounce) speak(`Hız ${speedKmh.toFixed(1)} kilometre saat`);
     }, 20000);
   };
 
   const pauseWorkout = () => {
+    if (!running) return;
     setPaused(true);
+    setPhase("DURAKLATILDI");
     stopWorkoutInternal();
-    setPhase("Duraklatıldı");
   };
 
   const resumeWorkout = () => {
@@ -250,56 +281,48 @@ export default function App() {
     setPaused(false);
     runPhase(phaseRef.current);
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(v - 1, 0));
-      if (!endless) {
-        setRemaining((v) => {
-          if (v <= 1) {
-            stopWorkout();
-            return 0;
-          }
-          return v - 1;
-        });
-      }
+      setPhaseLeft((v) => Math.max(0, v - 1));
+      setSessionLeft((v) => {
+        if (v <= 1) {
+          stopWorkout();
+          return 0;
+        }
+        return v - 1;
+      });
       setDistanceKm((d) => d + speedKmh / 3600);
+      setTotalCalories((c) => c + caloriePerMin / 60);
     }, 1000);
   };
 
   const stopWorkout = () => {
     setRunning(false);
     setPaused(false);
-    setPhase("Tamamlandı");
+    setPhase("TAMAMLANDI");
     stopWorkoutInternal();
-  };
-
-  const saveSettings = async (next) => {
-    setSettings(next);
-    await AsyncStorage.setItem(STORAGE.settings, JSON.stringify(next));
+    setScreen("home");
   };
 
   const connectSpotify = async () => {
     if (!settings.spotifyClientId?.trim()) {
-      Alert.alert("Spotify Client ID", "Önce Spotify Client ID girin.");
+      Alert.alert("Spotify", "Client ID girin.");
       return;
     }
     if (!spotifyRequest) {
-      Alert.alert("Spotify", "Yetkilendirme isteği hazır değil, tekrar deneyin.");
+      Alert.alert("Spotify", "Yetkilendirme hazır değil. Tekrar deneyin.");
       return;
     }
-
     const result = await spotifyPromptAsync();
-    if (result.type !== "success") {
-      Alert.alert("Spotify", "Bağlantı tamamlanmadı.");
-    }
+    if (result.type !== "success") Alert.alert("Spotify", "Bağlantı tamamlanmadı.");
   };
 
   const spotifyApi = async (path, method = "GET") => {
-    if (!spotifyToken) throw new Error("no token");
+    if (!spotifyToken) throw new Error("No token");
     const res = await fetch(`https://api.spotify.com/v1${path}`, {
       method,
       headers: { Authorization: `Bearer ${spotifyToken}` },
     });
     if (res.status === 204) return null;
-    if (!res.ok) throw new Error("spotify error");
+    if (!res.ok) throw new Error("Spotify request failed");
     return res.json();
   };
 
@@ -315,8 +338,9 @@ export default function App() {
         return;
       }
       const data = await res.json();
-      setSpotifyTrack(`${data.item?.name || "-"} — ${(data.item?.artists || []).map((a) => a.name).join(", ")}`);
-      setSpotifyPlaying(!!data.is_playing);
+      const artists = (data.item?.artists || []).map((a) => a.name).join(", ");
+      setSpotifyTrack(`${data.item?.name || "-"} — ${artists}`);
+      setSpotifyPlaying(Boolean(data.is_playing));
     } catch {
       setSpotifyTrack("Spotify okunamadı");
     }
@@ -327,7 +351,7 @@ export default function App() {
       await spotifyApi(spotifyPlaying ? "/me/player/pause" : "/me/player/play", "PUT");
       setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
-      Alert.alert("Spotify", "Oynatma kontrolü başarısız. Aktif cihaz seçili olmalı.");
+      Alert.alert("Spotify", "Oynatma kontrolü başarısız.");
     }
   };
 
@@ -336,7 +360,7 @@ export default function App() {
       await spotifyApi("/me/player/next", "POST");
       setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
-      Alert.alert("Spotify", "Sonraki parça başarısız.");
+      Alert.alert("Spotify", "Sonraki parça hatası.");
     }
   };
 
@@ -345,7 +369,7 @@ export default function App() {
       await spotifyApi("/me/player/previous", "POST");
       setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
-      Alert.alert("Spotify", "Önceki parça başarısız.");
+      Alert.alert("Spotify", "Önceki parça hatası.");
     }
   };
 
@@ -356,95 +380,122 @@ export default function App() {
     if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
   };
 
-  const currentMode = MODES[modeKey];
+  const mode = MODES[modeKey];
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>TAKT Mobile (Expo)</Text>
+        {screen === "onboarding" && (
+          <>
+            <Text style={styles.logo}>⚡ TAKT</Text>
+            <Text style={styles.subtitle}>CALIBRATE YOUR PERFORMANCE</Text>
+            <RingGauge valueText={bmi ? bmi.toFixed(1) : "--"} subtitle="STATUS" status={bmi ? bmiCategory(bmi) : "WAIT"} />
 
-        {!profile && (
-          <View style={styles.card}>
-            <Text style={styles.h2}>Onboarding</Text>
-            {[
-              ["firstName", "İsim"],
-              ["lastName", "Soyisim"],
-              ["height", "Boy (cm)"],
-              ["weight", "Kilo (kg)"],
-            ].map(([key, ph]) => (
-              <TextInput
-                key={key}
-                placeholder={ph}
-                placeholderTextColor="#8d8d8d"
-                value={form[key]}
-                onChangeText={(t) => setForm((f) => ({ ...f, [key]: t }))}
-                keyboardType={key === "height" || key === "weight" ? "numeric" : "default"}
-                style={styles.input}
-              />
-            ))}
-            <Text style={styles.meta}>Anlık VKİ: {bmi ? `${bmi.toFixed(1)} (${bmiCategory(bmi)})` : "-"}</Text>
-            <Pressable style={styles.btn} onPress={saveProfile}><Text style={styles.btnText}>Profili Kaydet</Text></Pressable>
-          </View>
+            <View style={styles.cardLarge}>
+              <View style={styles.rowWrap}>
+                <TextInput placeholder="FIRST NAME" placeholderTextColor="#7d95a9" style={[styles.input, styles.half]} value={form.firstName} onChangeText={(t) => setForm((f) => ({ ...f, firstName: t }))} />
+                <TextInput placeholder="LAST NAME" placeholderTextColor="#7d95a9" style={[styles.input, styles.half]} value={form.lastName} onChangeText={(t) => setForm((f) => ({ ...f, lastName: t }))} />
+              </View>
+
+              <View style={styles.rowWrap}>
+                <TextInput placeholder="HEIGHT (cm)" placeholderTextColor="#7d95a9" keyboardType="numeric" style={[styles.input, styles.half]} value={form.height} onChangeText={(t) => setForm((f) => ({ ...f, height: t }))} />
+                <TextInput placeholder="WEIGHT (kg)" placeholderTextColor="#7d95a9" keyboardType="numeric" style={[styles.input, styles.half]} value={form.weight} onChangeText={(t) => setForm((f) => ({ ...f, weight: t }))} />
+              </View>
+
+              <TextInput placeholder="AGE" placeholderTextColor="#7d95a9" keyboardType="numeric" style={styles.input} value={form.age} onChangeText={(t) => setForm((f) => ({ ...f, age: t }))} />
+
+              <Pressable style={styles.btnPrimary} onPress={onSaveProfile}>
+                <Text style={styles.btnTextStrong}>INITIALIZE SYSTEM →</Text>
+              </Pressable>
+            </View>
+          </>
         )}
 
-        {profile && (
+        {screen === "home" && profile && (
           <>
-            <View style={styles.card}>
-              <Text style={styles.h2}>Hoş geldin {profile.firstName}</Text>
-              <Text style={styles.meta}>VKİ: {bmi.toFixed(1)} ({bmiCategory(bmi)})</Text>
-              <Text style={styles.metric}>Hız: {speedKmh.toFixed(1)} km/sa</Text>
-              <Text style={styles.meta}>Kalori: {caloriePerMin.toFixed(2)} kcal/dk</Text>
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.h2}>Ayarlar</Text>
-              <View style={styles.row}><Text style={styles.meta}>Sesli koç</Text><Switch value={settings.voiceCoach} onValueChange={(v) => saveSettings({ ...settings, voiceCoach: v })} /></View>
-              <View style={styles.row}><Text style={styles.meta}>Hız anonsu (20 sn)</Text><Switch value={settings.speedAnnounce} onValueChange={(v) => saveSettings({ ...settings, speedAnnounce: v })} /></View>
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.h2}>Spotify</Text>
-              <TextInput
-                placeholder="Spotify Client ID"
-                placeholderTextColor="#8d8d8d"
-                value={settings.spotifyClientId}
-                onChangeText={(t) => saveSettings({ ...settings, spotifyClientId: t })}
-                style={styles.input}
-              />
-              <View style={styles.rowWrap}>
-                <Pressable style={styles.btnSecondary} onPress={connectSpotify}><Text style={styles.btnText}>Bağlan</Text></Pressable>
-                <Pressable style={styles.btnSecondary} onPress={disconnectSpotify}><Text style={styles.btnText}>Kes</Text></Pressable>
-              </View>
-              <Text style={styles.meta}>Çalan: {spotifyTrack}</Text>
-              <View style={styles.rowWrap}>
-                <Pressable style={styles.btnSecondary} onPress={spotifyPrev} disabled={!spotifyToken}><Text style={styles.btnText}>Önceki</Text></Pressable>
-                <Pressable style={styles.btnSecondary} onPress={spotifyToggle} disabled={!spotifyToken}><Text style={styles.btnText}>{spotifyPlaying ? "Duraklat" : "Oynat"}</Text></Pressable>
-                <Pressable style={styles.btnSecondary} onPress={spotifyNext} disabled={!spotifyToken}><Text style={styles.btnText}>Sonraki</Text></Pressable>
+            <View style={styles.topRow}>
+              <Text style={styles.logo}>⚡ TAKT</Text>
+              <View>
+                <Text style={styles.intervalText}>MODE SELECTED</Text>
+                <Text style={styles.intervalSub}>{mode.label.toUpperCase()} • OUTDOOR</Text>
               </View>
             </View>
 
+            <RingGauge
+              valueText={speedKmh.toFixed(1)}
+              subtitle="CURRENT SPEED"
+              status={`BMI ${bmi.toFixed(1)} / ${bmiCategory(bmi)}`}
+            />
+
+            <View style={styles.rowWrap}>
+              {Object.entries(MODES).map(([key, m]) => (
+                <Pressable key={key} style={[styles.modeCard, modeKey === key && styles.modeCardActive]} onPress={() => setModeKey(key)}>
+                  <Text style={styles.modeCardTitle}>{m.label}</Text>
+                  <Text style={styles.modeCardSub}>{m.high}/{m.low} sn</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={styles.card}> 
+              <Text style={styles.label}>Toplam Süre (dk)</Text>
+              <TextInput style={styles.input} keyboardType="numeric" value={totalDurationMin} onChangeText={setTotalDurationMin} placeholder="20" placeholderTextColor="#7d95a9" />
+              <View style={styles.row}><Text style={styles.label}>Voice Coach</Text><Switch value={settings.voiceCoach} onValueChange={(v) => saveSettings({ ...settings, voiceCoach: v })} /></View>
+              <View style={styles.row}><Text style={styles.label}>Speed Announce</Text><Switch value={settings.speedAnnounce} onValueChange={(v) => saveSettings({ ...settings, speedAnnounce: v })} /></View>
+            </View>
+
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{bpm || "--"}</Text><Text style={styles.metricLabel}>BPM</Text></View>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{distanceKm.toFixed(2)}</Text><Text style={styles.metricLabel}>KM</Text></View>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{totalCalories.toFixed(0)}</Text><Text style={styles.metricLabel}>KCAL</Text></View>
+            </View>
+
             <View style={styles.card}>
-              <Text style={styles.h2}>Interval</Text>
+              <Text style={styles.label}>Spotify Client ID</Text>
+              <TextInput placeholder="Spotify Client ID" placeholderTextColor="#7d95a9" style={styles.input} value={settings.spotifyClientId} onChangeText={(t) => saveSettings({ ...settings, spotifyClientId: t })} />
               <View style={styles.rowWrap}>
-                {Object.entries(MODES).map(([k, m]) => (
-                  <Pressable key={k} style={[styles.mode, modeKey === k && styles.modeActive]} onPress={() => setModeKey(k)}>
-                    <Text style={styles.modeText}>{m.label}</Text>
-                  </Pressable>
-                ))}
+                <Pressable style={styles.btnGhost} onPress={connectSpotify}><Text style={styles.btnText}>CONNECT</Text></Pressable>
+                <Pressable style={styles.btnGhost} onPress={disconnectSpotify}><Text style={styles.btnText}>DISCONNECT</Text></Pressable>
+                <Pressable style={styles.btnGhost} onPress={spotifyPrev} disabled={!spotifyToken}><Text style={styles.btnText}>◀</Text></Pressable>
+                <Pressable style={styles.btnGhost} onPress={spotifyToggle} disabled={!spotifyToken}><Text style={styles.btnText}>{spotifyPlaying ? "❚❚" : "▶"}</Text></Pressable>
+                <Pressable style={styles.btnGhost} onPress={spotifyNext} disabled={!spotifyToken}><Text style={styles.btnText}>▶▶</Text></Pressable>
               </View>
-              <TextInput value={durationMin} onChangeText={setDurationMin} keyboardType="numeric" style={styles.input} placeholder="Süre dakika" placeholderTextColor="#8d8d8d" />
-              <View style={styles.row}><Text style={styles.meta}>Süresiz</Text><Switch value={endless} onValueChange={setEndless} /></View>
-              <Text style={styles.meta}>Mod: {currentMode.label} ({currentMode.high}/{currentMode.low} sn)</Text>
-              <Text style={styles.metric}>{phase}</Text>
-              <Text style={styles.meta}>Faz kalan: {phaseLeft} sn</Text>
-              <Text style={styles.meta}>Toplam kalan: {endless ? "∞" : `${remaining} sn`}</Text>
-              <Text style={styles.meta}>Mesafe: {distanceKm.toFixed(2)} km</Text>
-              <View style={styles.rowWrap}>
-                <Pressable style={styles.btn} onPress={startWorkout} disabled={running}><Text style={styles.btnText}>Başlat</Text></Pressable>
-                <Pressable style={styles.btnSecondary} onPress={pauseWorkout} disabled={!running || paused}><Text style={styles.btnText}>Duraklat</Text></Pressable>
-                <Pressable style={styles.btnSecondary} onPress={resumeWorkout} disabled={!running || !paused}><Text style={styles.btnText}>Devam</Text></Pressable>
-                <Pressable style={styles.btnDanger} onPress={stopWorkout} disabled={!running}><Text style={styles.btnText}>Bitir</Text></Pressable>
+              <Text style={styles.spotifyTrack}>{spotifyTrack}</Text>
+            </View>
+
+            <Pressable style={styles.btnPrimary} onPress={startWorkout}>
+              <Text style={styles.btnTextStrong}>START WORKOUT</Text>
+            </Pressable>
+          </>
+        )}
+
+        {screen === "workout" && profile && (
+          <>
+            <View style={styles.topRow}>
+              <Text style={styles.logo}>⚡ TAKT</Text>
+              <View>
+                <Text style={styles.intervalText}>INTERVAL {laps}</Text>
+                <Text style={styles.intervalSub}>{mode.tag}</Text>
               </View>
+            </View>
+
+            <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={formatTimer(sessionLeft)} />
+
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{bpm || "--"}</Text><Text style={styles.metricLabel}>BPM</Text></View>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{distanceKm.toFixed(2)}</Text><Text style={styles.metricLabel}>KM</Text></View>
+              <View style={styles.metricBox}><Text style={styles.metricNum}>{totalCalories.toFixed(0)}</Text><Text style={styles.metricLabel}>KCAL</Text></View>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.label}>Phase Left: {phaseLeft}s</Text>
+              <Text style={styles.label}>Session Left: {formatTimer(sessionLeft)}</Text>
+              <Text style={styles.label}>Calorie Rate: {caloriePerMin.toFixed(2)} kcal/min</Text>
+            </View>
+
+            <View style={styles.rowWrap}>
+              <Pressable style={styles.btnGhostLarge} onPress={pauseWorkout} disabled={!running || paused}><Text style={styles.btnTextStrong}>PAUSE</Text></Pressable>
+              <Pressable style={styles.btnGhostLarge} onPress={resumeWorkout} disabled={!running || !paused}><Text style={styles.btnTextStrong}>RESUME</Text></Pressable>
+              <Pressable style={styles.btnPrimaryLarge} onPress={stopWorkout} disabled={!running}><Text style={styles.btnTextStrong}>FINISH</Text></Pressable>
             </View>
           </>
         )}
@@ -454,21 +505,152 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#1a1a1b" },
-  container: { padding: 16, gap: 12 },
-  title: { color: "#fff", fontSize: 28, fontWeight: "900" },
-  card: { backgroundColor: "#24262b", borderRadius: 14, padding: 14, gap: 8 },
-  h2: { color: "#d8fbff", fontSize: 18, fontWeight: "800" },
-  input: { backgroundColor: "#121317", color: "#fff", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#333" },
-  meta: { color: "#b9b9b9" },
-  metric: { color: "#72ff7d", fontSize: 24, fontWeight: "900" },
-  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  safe: { flex: 1, backgroundColor: "#071925" },
+  container: {
+    padding: 18,
+    gap: 14,
+    backgroundColor: "#071925",
+  },
+  topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  logo: { color: "#E8F6FF", fontSize: 34, fontWeight: "900", letterSpacing: 1.4 },
+  subtitle: { color: "#86A8BE", fontSize: 20, textAlign: "center", marginBottom: 8, letterSpacing: 1.2 },
+  intervalText: { color: "#25B7FF", fontWeight: "800", fontSize: 24, textAlign: "right" },
+  intervalSub: { color: "#6F8EA6", fontWeight: "700", textAlign: "right" },
+
+  ringWrap: {
+    height: 370,
+    justifyContent: "center",
+    alignItems: "center",
+    marginVertical: 8,
+    backgroundColor: "rgba(28,71,98,0.22)",
+    borderRadius: 22,
+  },
+  ringOuter: {
+    position: "absolute",
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    borderWidth: 18,
+  },
+  ringActive: {
+    position: "absolute",
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    borderWidth: 18,
+    borderTopColor: "#23B6FF",
+    borderRightColor: "#23B6FF",
+    borderBottomColor: "#23B6FF",
+    borderLeftColor: "rgba(35,182,255,0.15)",
+    transform: [{ rotate: "-28deg" }],
+  },
+  ringCenter: { alignItems: "center", justifyContent: "center" },
+  ringSubtitle: { color: "#91AFC3", fontWeight: "800", fontSize: 24, letterSpacing: 1.2 },
+  ringValue: { color: "#F4FAFF", fontWeight: "900", fontSize: 82 },
+  ringStatus: {
+    marginTop: 8,
+    color: "#23B6FF",
+    backgroundColor: "rgba(20,72,99,0.65)",
+    borderColor: "rgba(35,182,255,0.35)",
+    borderWidth: 1,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    fontWeight: "900",
+  },
+
+  cardLarge: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(90,138,167,0.25)",
+    backgroundColor: "rgba(5,33,48,0.78)",
+    padding: 16,
+    gap: 12,
+  },
+  card: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(90,138,167,0.25)",
+    backgroundColor: "rgba(5,33,48,0.78)",
+    padding: 14,
+    gap: 10,
+  },
   rowWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  btn: { backgroundColor: "#2ba8ff", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
-  btnSecondary: { backgroundColor: "#3a3b40", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
-  btnDanger: { backgroundColor: "#ff5f6d", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
-  btnText: { color: "#fff", fontWeight: "800" },
-  mode: { backgroundColor: "#30323a", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
-  modeActive: { backgroundColor: "#2ba8ff" },
-  modeText: { color: "#fff", fontSize: 12 },
+  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  half: { width: "48%" },
+  input: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(122,171,198,0.28)",
+    backgroundColor: "rgba(15,45,64,0.78)",
+    color: "#EAF6FF",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontWeight: "700",
+  },
+  label: { color: "#A2BDD0", fontWeight: "700" },
+  spotifyTrack: { color: "#A2BDD0", fontSize: 13, marginTop: 4 },
+
+  modeCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(106,160,191,0.35)",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(15,45,64,0.65)",
+  },
+  modeCardActive: {
+    borderColor: "#23B6FF",
+    backgroundColor: "rgba(35,182,255,0.18)",
+  },
+  modeCardTitle: { color: "#E9F7FF", fontWeight: "800" },
+  modeCardSub: { color: "#82A6BD", fontWeight: "700", fontSize: 12 },
+
+  metricsGrid: { flexDirection: "row", justifyContent: "space-between", gap: 10 },
+  metricBox: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(90,138,167,0.25)",
+    backgroundColor: "rgba(10,41,59,0.78)",
+    paddingVertical: 18,
+    alignItems: "center",
+  },
+  metricNum: { color: "#F4FAFF", fontSize: 44, fontWeight: "900" },
+  metricLabel: { color: "#7C9CB2", fontWeight: "800", letterSpacing: 1.2 },
+
+  btnPrimary: {
+    backgroundColor: "#23B6FF",
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+  btnPrimaryLarge: {
+    backgroundColor: "#23B6FF",
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    minWidth: 120,
+    alignItems: "center",
+  },
+  btnGhost: {
+    backgroundColor: "rgba(25,52,72,0.85)",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "rgba(90,138,167,0.35)",
+  },
+  btnGhostLarge: {
+    backgroundColor: "rgba(15,37,52,0.92)",
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    minWidth: 120,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(90,138,167,0.35)",
+  },
+  btnText: { color: "#DBF3FF", fontWeight: "800" },
+  btnTextStrong: { color: "#EFFFFF", fontWeight: "900", fontSize: 18, letterSpacing: 1.2 },
 });
