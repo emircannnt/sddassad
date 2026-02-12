@@ -13,14 +13,11 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as Speech from "expo-speech";
-import * as AuthSession from "expo-auth-session";
-import * as WebBrowser from "expo-web-browser";
-
-WebBrowser.maybeCompleteAuthSession();
 
 const STORAGE = {
   profile: "takt.profile",
   settings: "takt.settings",
+  events: "takt.events",
 };
 
 const MODES = {
@@ -93,6 +90,19 @@ const caloriesFromSpeed = (speed, kg) => {
   return (met * 3.5 * kg) / 200;
 };
 
+const toRad = (deg) => (deg * Math.PI) / 180;
+
+const haversineKm = (a, b) => {
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLon = Math.sin(dLon / 2);
+  const aa = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
+  return 6371 * (2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa)));
+};
+
 function bmiCategory(bmi) {
   if (bmi < 18.5) return "LOW";
   if (bmi < 24.9) return "FIT";
@@ -125,7 +135,7 @@ export default function App() {
   const [screen, setScreen] = useState("onboarding");
   const [profile, setProfile] = useState(null);
   const [form, setForm] = useState({ firstName: "", lastName: "", height: "", weight: "", age: "28" });
-  const [settings, setSettings] = useState({ voiceCoach: true, speedAnnounce: true, spotifyClientId: "" });
+  const [settings, setSettings] = useState({ voiceCoach: true, speedAnnounce: true });
 
   const [modeKey, setModeKey] = useState("fatBurn");
   const [totalDurationMin, setTotalDurationMin] = useState("20");
@@ -145,36 +155,20 @@ export default function App() {
   const [laps, setLaps] = useState(1);
   const [coachLine, setCoachLine] = useState("Hazır");
 
-  const [spotifyToken, setSpotifyToken] = useState(null);
-  const [spotifyTrack, setSpotifyTrack] = useState("-");
-  const [spotifyPlaying, setSpotifyPlaying] = useState(false);
-
   const watchRef = useRef(null);
   const tickerRef = useRef(null);
-  const phaseTimeoutRef = useRef(null);
   const motivationRef = useRef(null);
-  const spotifyPollRef = useRef(null);
 
   const currentPhaseRef = useRef("work");
   const runningRef = useRef(false);
-  const pausedRef = useRef(false);
   const speedRef = useRef(0);
   const calorieRateRef = useRef(0);
-  const warningCooldownRef = useRef(0);
-  const lastGpsRef = useRef(null);
   const transitionWarnedRef = useRef(false);
   const smoothSpeedRef = useRef(0);
-
-  const redirectUri = AuthSession.makeRedirectUri({ scheme: "taktmobile" });
-  const [spotifyRequest, spotifyResponse, spotifyPromptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: settings.spotifyClientId?.trim() || "",
-      responseType: AuthSession.ResponseType.Token,
-      scopes: ["user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing"],
-      redirectUri,
-    },
-    { authorizationEndpoint: "https://accounts.spotify.com/authorize" },
-  );
+  const lastGpsRef = useRef(null);
+  const underTargetSecondsRef = useRef(0);
+  const overTargetSecondsRef = useRef(0);
+  const restOutOfRangeSecondsRef = useRef(0);
 
   const mode = MODES[modeKey];
 
@@ -185,12 +179,22 @@ export default function App() {
     return w / ((h / 100) ** 2);
   }, [profile, form.height, form.weight]);
 
+  const logEvent = async (name, payload = {}) => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE.events);
+      const list = raw ? JSON.parse(raw) : [];
+      list.push({ name, payload, at: Date.now() });
+      await AsyncStorage.setItem(STORAGE.events, JSON.stringify(list.slice(-200)));
+    } catch {
+      // noop
+    }
+  };
+
   useEffect(() => {
     runningRef.current = running;
-    pausedRef.current = paused;
     speedRef.current = speedKmh;
     calorieRateRef.current = calorieRate;
-  }, [running, paused, speedKmh, calorieRate]);
+  }, [running, speedKmh, calorieRate]);
 
   useEffect(() => {
     (async () => {
@@ -198,7 +202,9 @@ export default function App() {
         AsyncStorage.getItem(STORAGE.profile),
         AsyncStorage.getItem(STORAGE.settings),
       ]);
+
       if (storedSettings) setSettings((prev) => ({ ...prev, ...JSON.parse(storedSettings) }));
+
       if (storedProfile) {
         const parsed = JSON.parse(storedProfile);
         setProfile(parsed);
@@ -209,41 +215,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (spotifyResponse?.type === "success") {
-      const token = spotifyResponse.params?.access_token;
-      if (token) {
-        setSpotifyToken(token);
-        Alert.alert("Spotify", "Bağlandı");
-      }
-    }
-  }, [spotifyResponse]);
-
-  useEffect(() => {
-    if (!spotifyToken) {
-      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
-      setSpotifyTrack("-");
-      setSpotifyPlaying(false);
-      return;
-    }
-    refreshSpotifyPlayback(spotifyToken);
-    if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
-    spotifyPollRef.current = setInterval(() => refreshSpotifyPlayback(spotifyToken), 5000);
-    return () => {
-      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
-    };
-  }, [spotifyToken]);
-
-  useEffect(() => {
     return () => {
       stopWorkoutInternal();
       if (watchRef.current) watchRef.current.remove();
-      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
     };
   }, []);
 
-  const speakCoach = (text) => {
+  const speakCoach = (text, forceSpeak = false) => {
     setCoachLine(text);
-    if (!settings.voiceCoach) return;
+    if (!settings.voiceCoach && !forceSpeak) return;
     Speech.speak(text, { language: "tr-TR", rate: 1, pitch: 1.05 });
   };
 
@@ -254,48 +234,60 @@ export default function App() {
 
   const startLocation = async (weight) => {
     const perm = await Location.requestForegroundPermissionsAsync();
-    if (perm.status !== "granted") return;
+    if (perm.status !== "granted") {
+      Alert.alert("Konum Gerekli", "Hız ve alınan yol hassas takibi için konum izni verin.");
+      await logEvent("permissions_denied", { permission: "location" });
+      return;
+    }
 
     if (watchRef.current) watchRef.current.remove();
+
     watchRef.current = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.BestForNavigation,
         timeInterval: 1000,
         distanceInterval: 1,
       },
-      (loc) => {
+      async (loc) => {
         const nowTs = loc.timestamp;
-        let instantKmh = (loc.coords.speed ?? 0) * 3.6;
-
-        if (!instantKmh && lastGpsRef.current) {
-          const prev = lastGpsRef.current;
-          const dt = Math.max((nowTs - prev.ts) / 1000, 0.5);
-          const dLat = ((loc.coords.latitude - prev.lat) * Math.PI) / 180;
-          const dLon = ((loc.coords.longitude - prev.lon) * Math.PI) / 180;
-          const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos((prev.lat * Math.PI) / 180) *
-              Math.cos((loc.coords.latitude * Math.PI) / 180) *
-              Math.sin(dLon / 2) ** 2;
-          const km = 6371 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-          instantKmh = (km / dt) * 3600;
-        }
-
-        const alpha = 0.35;
-        smoothSpeedRef.current = smoothSpeedRef.current
-          ? smoothSpeedRef.current * (1 - alpha) + instantKmh * alpha
-          : instantKmh;
-
-        setRawSpeedKmh(instantKmh);
-        setSpeedKmh(smoothSpeedRef.current);
-        setBpm(Math.round(Math.min(185, Math.max(95, 95 + smoothSpeedRef.current * 4.2))));
-        setCalorieRate(caloriesFromSpeed(smoothSpeedRef.current, weight));
-
-        lastGpsRef.current = {
-          lat: loc.coords.latitude,
-          lon: loc.coords.longitude,
+        const point = {
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          accuracy: loc.coords.accuracy,
           ts: nowTs,
         };
+
+        let segmentKm = 0;
+        if (lastGpsRef.current) {
+          segmentKm = haversineKm(lastGpsRef.current, point);
+          const dt = Math.max((point.ts - lastGpsRef.current.ts) / 1000, 0.5);
+          const rawFromSegment = (segmentKm / dt) * 3600;
+
+          const rawSensor = (loc.coords.speed ?? -1) >= 0 ? loc.coords.speed * 3.6 : NaN;
+          const instantKmh = Number.isFinite(rawSensor) && rawSensor > 0 ? rawSensor : rawFromSegment;
+
+          const spikeFiltered = instantKmh > 35 ? speedRef.current : instantKmh;
+          const alpha = 0.28;
+          smoothSpeedRef.current = smoothSpeedRef.current
+            ? smoothSpeedRef.current * (1 - alpha) + spikeFiltered * alpha
+            : spikeFiltered;
+
+          setRawSpeedKmh(Math.max(0, spikeFiltered));
+          setSpeedKmh(Math.max(0, smoothSpeedRef.current));
+          setBpm(Math.round(Math.min(185, Math.max(95, 95 + smoothSpeedRef.current * 4.2))));
+          setCalorieRate(caloriesFromSpeed(smoothSpeedRef.current, weight));
+
+          const isAccurate = (loc.coords.accuracy ?? 999) <= 20;
+          if (isAccurate && segmentKm < 0.03) {
+            setDistanceKm((d) => d + segmentKm);
+          }
+
+          if (!isAccurate) {
+            await logEvent("gps_signal_lost", { accuracy: loc.coords.accuracy });
+          }
+        }
+
+        lastGpsRef.current = point;
       },
     );
   };
@@ -308,22 +300,23 @@ export default function App() {
       weight: Number(form.weight),
       age: Number(form.age),
     };
+
     if (!next.firstName || !next.lastName || !next.height || !next.weight) {
       Alert.alert("Eksik bilgi", "Lütfen tüm alanları doldurun.");
       return;
     }
+
     setProfile(next);
     await AsyncStorage.setItem(STORAGE.profile, JSON.stringify(next));
+    await logEvent("onboarding_completed", { age: next.age });
     await startLocation(next.weight);
     setScreen("home");
   };
 
   const stopWorkoutInternal = () => {
     if (tickerRef.current) clearInterval(tickerRef.current);
-    if (phaseTimeoutRef.current) clearTimeout(phaseTimeoutRef.current);
     if (motivationRef.current) clearInterval(motivationRef.current);
     tickerRef.current = null;
-    phaseTimeoutRef.current = null;
     motivationRef.current = null;
   };
 
@@ -332,90 +325,120 @@ export default function App() {
     const sec = to === "work" ? mode.workSec : mode.restSec;
     setPhase(to === "work" ? "HIZLAN" : "YAVAŞLA");
     setPhaseLeft(sec);
+
     transitionWarnedRef.current = false;
-    warningCooldownRef.current = 0;
+    underTargetSecondsRef.current = 0;
+    overTargetSecondsRef.current = 0;
+    restOutOfRangeSecondsRef.current = 0;
+
     speakCoach(to === "work" ? "Hızlan, hedef hıza çık!" : "Yavaşla, kontrollü toparlan.");
   };
 
-  const startWorkout = () => {
-    if (!profile) return;
-    stopWorkoutInternal();
+  const shouldWarnUnderTarget = (seconds) => seconds === 1 || seconds === 5 || (seconds > 5 && (seconds - 5) % 8 === 0);
 
-    const totalSec = Math.max(60, Number(totalDurationMin || 20) * 60);
-    setScreen("workout");
-    setRunning(true);
-    setPaused(false);
-    setDistanceKm(0);
-    setTotalCalories(0);
-    setSessionLeft(totalSec);
-    setLaps(1);
-    switchPhase("work");
+  const shouldWarnPeriodic8 = (seconds) => seconds > 0 && seconds % 8 === 0;
 
-    tickerRef.current = setInterval(() => {
-      const inWork = currentPhaseRef.current === "work";
-      const targetMet = speedRef.current >= mode.workMin;
+  const runTick = () => {
+    const inWork = currentPhaseRef.current === "work";
+    const speed = speedRef.current;
 
-      let decremented = false;
+    const belowWork = speed < mode.workMin;
+    const aboveWork = speed > mode.workMax;
+    const belowRest = speed < mode.restMin;
+    const aboveRest = speed > mode.restMax;
 
-      setPhaseLeft((v) => {
-        if (v <= 0) return 0;
+    if (inWork && belowWork) {
+      underTargetSecondsRef.current += 1;
+      if (shouldWarnUnderTarget(underTargetSecondsRef.current)) {
+        speakCoach(`Hedefin altındasın. En az ${mode.workMin} km/sa.`);
+      }
+    } else {
+      underTargetSecondsRef.current = 0;
+    }
 
-        if (inWork) {
-          if (!targetMet) return v;
-          decremented = true;
-          return v - 1;
+    if (inWork && aboveWork) {
+      overTargetSecondsRef.current += 1;
+      if (shouldWarnPeriodic8(overTargetSecondsRef.current)) {
+        speakCoach(`Kontrollü ol. ${mode.workMax} km/sa üzerine çıktın.`);
+      }
+    } else {
+      overTargetSecondsRef.current = 0;
+    }
+
+    if (!inWork && (belowRest || aboveRest)) {
+      restOutOfRangeSecondsRef.current += 1;
+      if (shouldWarnPeriodic8(restOutOfRangeSecondsRef.current)) {
+        speakCoach(
+          belowRest
+            ? `Toparlanmayı çok düşürdün. ${mode.restMin}-${mode.restMax} km/sa aralığında kal.`
+            : `Toparlanma temposu yüksek. ${mode.restMin}-${mode.restMax} km/sa aralığına in.`,
+        );
+      }
+    } else {
+      restOutOfRangeSecondsRef.current = 0;
+    }
+
+    const canProgressPhase = !inWork || !belowWork;
+
+    if (canProgressPhase) {
+      setSessionLeft((v) => {
+        if (v <= 1) {
+          stopWorkout();
+          return 0;
         }
-
-        decremented = true;
         return v - 1;
       });
 
-      if (inWork && !targetMet) {
-        warningCooldownRef.current += 1;
-        speakCoach(`Yavaşladın! TAKT'ı yakala: en az ${mode.workMin} km/sa.`);
-        if (warningCooldownRef.current >= 6) {
-          speakCoach(`Süre durdu. ${mode.workMin} km/sa hıza çık.`);
-          warningCooldownRef.current = 0;
-        }
+      setTotalCalories((c) => c + calorieRateRef.current / 60);
+    }
+
+    setPhaseLeft((current) => {
+      const next = canProgressPhase ? current - 1 : current;
+
+      if (!transitionWarnedRef.current && next > 0 && next <= 3) {
+        transitionWarnedRef.current = true;
+        speakCoach("3, 2, 1... Faz değişiyor.");
       }
 
-      if (decremented) {
-        setSessionLeft((v) => {
-          if (v <= 1) {
-            stopWorkout();
-            return 0;
-          }
-          return v - 1;
-        });
-
-        setDistanceKm((d) => d + speedRef.current / 3600);
-        setTotalCalories((c) => c + calorieRateRef.current / 60);
+      if (next <= 0) {
+        if (currentPhaseRef.current === "work") {
+          switchPhase("rest");
+          return mode.restSec;
+        }
+        setLaps((l) => l + 1);
+        switchPhase("work");
+        return mode.workSec;
       }
 
-      setPhaseLeft((current) => {
-        if (!transitionWarnedRef.current && current > 0 && current <= 5) {
-          transitionWarnedRef.current = true;
-          speakCoach("3, 2, 1... Faz değişiyor.");
-        }
+      return next;
+    });
+  };
 
-        if (current <= 0) {
-          if (currentPhaseRef.current === "work") {
-            switchPhase("rest");
-          } else {
-            setLaps((l) => l + 1);
-            switchPhase("work");
-          }
-          return currentPhaseRef.current === "work" ? mode.workSec : mode.restSec;
-        }
-        return current;
-      });
-    }, 1000);
+  const startTicker = () => {
+    stopWorkoutInternal();
+
+    tickerRef.current = setInterval(runTick, 1000);
 
     motivationRef.current = setInterval(() => {
       const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
       speakCoach(msg);
       if (settings.speedAnnounce) speakCoach(`Anlık hız ${speedRef.current.toFixed(1)} kilometre saat.`);
     }, 20000);
+  };
+
+  const startWorkout = async () => {
+    if (!profile) return;
+
+    const totalSec = Math.max(60, Number(totalDurationMin || 20) * 60);
+    setScreen("workout");
+    setRunning(true);
+    setPaused(false);
+    setTotalCalories(0);
+    setSessionLeft(totalSec);
+    setLaps(1);
+    switchPhase("work");
+    await logEvent("workout_started", { mode: modeKey, durationSec: totalSec });
+    startTicker();
   };
 
   const pauseWorkout = () => {
@@ -429,153 +452,20 @@ export default function App() {
     if (!runningRef.current) return;
     setPaused(false);
     speakCoach("Antrenman devam ediyor.");
-    startWorkoutFromCurrentState();
+    startTicker();
   };
 
-  const startWorkoutFromCurrentState = () => {
-    stopWorkoutInternal();
-
-    tickerRef.current = setInterval(() => {
-      const inWork = currentPhaseRef.current === "work";
-      const targetMet = speedRef.current >= mode.workMin;
-      let decremented = false;
-
-      setPhaseLeft((v) => {
-        if (v <= 0) return 0;
-        if (inWork && !targetMet) return v;
-        decremented = true;
-        return v - 1;
-      });
-
-      if (inWork && !targetMet) {
-        warningCooldownRef.current += 1;
-        if (warningCooldownRef.current >= 6) {
-          speakCoach(`Süre durdu. ${mode.workMin} km/sa hıza çık.`);
-          warningCooldownRef.current = 0;
-        }
-      }
-
-      if (decremented) {
-        setSessionLeft((v) => {
-          if (v <= 1) {
-            stopWorkout();
-            return 0;
-          }
-          return v - 1;
-        });
-        setDistanceKm((d) => d + speedRef.current / 3600);
-        setTotalCalories((c) => c + calorieRateRef.current / 60);
-      }
-
-      setPhaseLeft((current) => {
-        if (!transitionWarnedRef.current && current > 0 && current <= 5) {
-          transitionWarnedRef.current = true;
-          speakCoach("3, 2, 1... Faz değişiyor.");
-        }
-        if (current <= 0) {
-          if (currentPhaseRef.current === "work") {
-            switchPhase("rest");
-          } else {
-            setLaps((l) => l + 1);
-            switchPhase("work");
-          }
-          return currentPhaseRef.current === "work" ? mode.workSec : mode.restSec;
-        }
-        return current;
-      });
-    }, 1000);
-
-    motivationRef.current = setInterval(() => {
-      const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
-      speakCoach(msg);
-      if (settings.speedAnnounce) speakCoach(`Anlık hız ${speedRef.current.toFixed(1)} kilometre saat.`);
-    }, 20000);
-  };
-
-  const stopWorkout = () => {
+  const stopWorkout = async () => {
     setRunning(false);
     setPaused(false);
     setPhase("TAMAMLANDI");
     stopWorkoutInternal();
     setScreen("home");
-  };
-
-  const connectSpotify = async () => {
-    if (!settings.spotifyClientId?.trim()) {
-      Alert.alert("Spotify", "Client ID girin.");
-      return;
-    }
-    if (!spotifyRequest) {
-      Alert.alert("Spotify", "Yetkilendirme hazır değil. Tekrar deneyin.");
-      return;
-    }
-    const result = await spotifyPromptAsync();
-    if (result.type !== "success") Alert.alert("Spotify", "Bağlantı tamamlanmadı.");
-  };
-
-  const spotifyApi = async (path, method = "GET") => {
-    if (!spotifyToken) throw new Error("No token");
-    const res = await fetch(`https://api.spotify.com/v1${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${spotifyToken}` },
+    await logEvent("workout_completed", {
+      distanceKm: Number(distanceKm.toFixed(3)),
+      calories: Number(totalCalories.toFixed(1)),
+      laps,
     });
-    if (res.status === 204) return null;
-    if (!res.ok) throw new Error("Spotify request failed");
-    return res.json();
-  };
-
-  const refreshSpotifyPlayback = async (token) => {
-    try {
-      const useToken = token || spotifyToken;
-      if (!useToken) return;
-      const res = await fetch("https://api.spotify.com/v1/me/player", {
-        headers: { Authorization: `Bearer ${useToken}` },
-      });
-      if (!res.ok || res.status === 204) {
-        setSpotifyTrack("Aktif cihaz/parça yok");
-        return;
-      }
-      const data = await res.json();
-      const artists = (data.item?.artists || []).map((a) => a.name).join(", ");
-      setSpotifyTrack(`${data.item?.name || "-"} — ${artists}`);
-      setSpotifyPlaying(Boolean(data.is_playing));
-    } catch {
-      setSpotifyTrack("Spotify okunamadı");
-    }
-  };
-
-  const spotifyToggle = async () => {
-    try {
-      await spotifyApi(spotifyPlaying ? "/me/player/pause" : "/me/player/play", "PUT");
-      setTimeout(() => refreshSpotifyPlayback(), 400);
-    } catch {
-      Alert.alert("Spotify", "Oynatma kontrolü başarısız.");
-    }
-  };
-
-  const spotifyNext = async () => {
-    try {
-      await spotifyApi("/me/player/next", "POST");
-      setTimeout(() => refreshSpotifyPlayback(), 400);
-    } catch {
-      Alert.alert("Spotify", "Sonraki parça hatası.");
-    }
-  };
-
-  const spotifyPrev = async () => {
-    try {
-      await spotifyApi("/me/player/previous", "POST");
-      setTimeout(() => refreshSpotifyPlayback(), 400);
-    } catch {
-      Alert.alert("Spotify", "Önceki parça hatası.");
-    }
-  };
-
-  const disconnectSpotify = () => {
-    setSpotifyToken(null);
-    setSpotifyTrack("-");
-    setSpotifyPlaying(false);
-    if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
   };
 
   return (
@@ -615,7 +505,7 @@ export default function App() {
             <RingGauge
               valueText={speedKmh.toFixed(1)}
               subtitle="CURRENT SPEED"
-              status={`Target ${mode.workMin}-${mode.workMax} km/sa | GPS ${rawSpeedKmh.toFixed(1)} km/sa`}
+              status={`Work ${mode.workMin}-${mode.workMax} | Rest ${mode.restMin}-${mode.restMax} | GPS ${rawSpeedKmh.toFixed(1)} km/sa`}
             />
 
             <View style={styles.rowWrap}>
@@ -642,19 +532,6 @@ export default function App() {
               <Text style={styles.coachLine}>Koç: {coachLine}</Text>
             </View>
 
-            <View style={styles.card}>
-              <Text style={styles.label}>Spotify Client ID</Text>
-              <TextInput placeholder="Spotify Client ID" placeholderTextColor="#7d95a9" style={styles.input} value={settings.spotifyClientId} onChangeText={(t) => saveSettings({ ...settings, spotifyClientId: t })} />
-              <View style={styles.rowWrap}>
-                <Pressable style={styles.btnGhost} onPress={connectSpotify}><Text style={styles.btnText}>CONNECT</Text></Pressable>
-                <Pressable style={styles.btnGhost} onPress={disconnectSpotify}><Text style={styles.btnText}>DISCONNECT</Text></Pressable>
-                <Pressable style={styles.btnGhost} onPress={spotifyPrev} disabled={!spotifyToken}><Text style={styles.btnText}>◀</Text></Pressable>
-                <Pressable style={styles.btnGhost} onPress={spotifyToggle} disabled={!spotifyToken}><Text style={styles.btnText}>{spotifyPlaying ? "❚❚" : "▶"}</Text></Pressable>
-                <Pressable style={styles.btnGhost} onPress={spotifyNext} disabled={!spotifyToken}><Text style={styles.btnText}>▶▶</Text></Pressable>
-              </View>
-              <Text style={styles.spotifyTrack}>{spotifyTrack}</Text>
-            </View>
-
             <Pressable style={styles.btnPrimary} onPress={startWorkout}><Text style={styles.btnTextStrong}>START WORKOUT</Text></Pressable>
           </>
         )}
@@ -669,7 +546,7 @@ export default function App() {
               </View>
             </View>
 
-            <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={`Target ≥ ${mode.workMin} km/sa | ${formatTimer(sessionLeft)}`} />
+            <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={`Target ${mode.workMin}-${mode.workMax} | Rest ${mode.restMin}-${mode.restMax} | ${formatTimer(sessionLeft)}`} />
 
             <View style={styles.metricsGrid}>
               <View style={styles.metricBox}><Text style={styles.metricNum}>{bpm || "--"}</Text><Text style={styles.metricLabel}>BPM</Text></View>
@@ -779,7 +656,6 @@ const styles = StyleSheet.create({
   },
   label: { color: "#A2BDD0", fontWeight: "700" },
   coachLine: { color: "#23B6FF", fontWeight: "800" },
-  spotifyTrack: { color: "#A2BDD0", fontSize: 13, marginTop: 4 },
 
   modeCard: {
     borderRadius: 14,
@@ -823,14 +699,6 @@ const styles = StyleSheet.create({
     minWidth: 120,
     alignItems: "center",
   },
-  btnGhost: {
-    backgroundColor: "rgba(25,52,72,0.85)",
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(90,138,167,0.35)",
-  },
   btnGhostLarge: {
     backgroundColor: "rgba(15,37,52,0.92)",
     borderRadius: 16,
@@ -841,6 +709,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(90,138,167,0.35)",
   },
-  btnText: { color: "#DBF3FF", fontWeight: "800" },
   btnTextStrong: { color: "#EFFFFF", fontWeight: "900", fontSize: 18, letterSpacing: 1.2 },
 });

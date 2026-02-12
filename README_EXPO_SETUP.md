@@ -18,7 +18,7 @@ Bu Gradle adımı React Native JS bundle üretirken patlar. En sık nedenler:
 - Yanlış/eksik Expo auth yapılandırması
 - Cache bozulması
 
-Bu sürümde Spotify auth akışı `expo-auth-session` + `expo-web-browser` uyumlu şekilde güncellendi ve `scheme` tanımlandı.
+Bu sürümde konum ve antrenman akışı Expo yapısına uygun şekilde sadeleştirildi.
 
 ## 3) Temiz kurulum adımları (Windows)
 
@@ -52,15 +52,10 @@ gradlew app:bundleRelease --stacktrace --info
 
 ve özellikle `createBundleReleaseJsAndAssets` bölümündeki ilk JS hata satırını kontrol edin.
 
-## 6) Spotify Notu
-
-Spotify kontrolü için Spotify Developer panelinden bir app açıp `Client ID` girmeniz gerekir.
-
-
-## 7) Ekran akışı (istenen tasarım yapısı)
+## 6) Ekran akışı (istenen tasarım yapısı)
 
 - **Ekran 1 (Onboarding):** isim/soyisim/boy/kilo/yaş + dairesel VKİ görünümü
-- **Ekran 2 (Ana Sayfa):** mod seçimi, canlı hız kartı, Spotify kontrol alanı, Start butonu
+- **Ekran 2 (Ana Sayfa):** mod seçimi, canlı hız kartı, Start butonu
 - **Ekran 3 (Antrenman):** büyük hız göstergesi + kalan süre + bpm/km/kcal + pause/resume/finish
 
 Bu akış doğrudan `App.js` içinde `screen` state’i ile yönetilir.
