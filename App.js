@@ -14,6 +14,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as Speech from "expo-speech";
 import * as AuthSession from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+
+WebBrowser.maybeCompleteAuthSession();
 
 const STORAGE = {
   profile: "takt.profile",
@@ -28,12 +31,7 @@ const MODES = {
   maksimumGuc: { label: "Maksimum Güç", high: 15, low: 20 },
 };
 
-const motivationPool = [
-  "Çok iyi gidiyorsun!",
-  "Hedefine az kaldı!",
-  "Ritmini koru!",
-  "Harika tempo!",
-];
+const motivationPool = ["Çok iyi gidiyorsun!", "Hedefine az kaldı!", "Ritmini koru!", "Harika tempo!"];
 
 function bmiCategory(bmi) {
   if (bmi < 18.5) return "Düşük";
@@ -76,6 +74,24 @@ export default function App() {
   const spotifyPollRef = useRef(null);
   const phaseRef = useRef("high");
 
+  const redirectUri = AuthSession.makeRedirectUri({ scheme: "taktmobile" });
+  const scopes = ["user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing"];
+
+  const spotifyDiscovery = useMemo(
+    () => ({ authorizationEndpoint: "https://accounts.spotify.com/authorize" }),
+    [],
+  );
+
+  const [spotifyRequest, spotifyResponse, spotifyPromptAsync] = AuthSession.useAuthRequest(
+    {
+      clientId: settings.spotifyClientId?.trim() || "",
+      responseType: AuthSession.ResponseType.Token,
+      scopes,
+      redirectUri,
+    },
+    spotifyDiscovery,
+  );
+
   const bmi = useMemo(() => {
     const h = Number(profile?.height || form.height);
     const w = Number(profile?.weight || form.weight);
@@ -87,10 +103,41 @@ export default function App() {
     (async () => {
       const rawProfile = await AsyncStorage.getItem(STORAGE.profile);
       const rawSettings = await AsyncStorage.getItem(STORAGE.settings);
-      if (rawProfile) setProfile(JSON.parse(rawProfile));
+      if (rawProfile) {
+        const parsed = JSON.parse(rawProfile);
+        setProfile(parsed);
+        startLocation(parsed.weight);
+      }
       if (rawSettings) setSettings((prev) => ({ ...prev, ...JSON.parse(rawSettings) }));
     })();
   }, []);
+
+  useEffect(() => {
+    if (spotifyResponse?.type === "success") {
+      const token = spotifyResponse.params?.access_token;
+      if (token) {
+        setSpotifyToken(token);
+        Alert.alert("Spotify", "Bağlantı başarılı.");
+      }
+    }
+  }, [spotifyResponse]);
+
+  useEffect(() => {
+    if (!spotifyToken) {
+      setSpotifyTrack("-");
+      setSpotifyPlaying(false);
+      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
+      return;
+    }
+
+    refreshSpotifyPlayback(spotifyToken);
+    if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
+    spotifyPollRef.current = setInterval(() => refreshSpotifyPlayback(spotifyToken), 5000);
+
+    return () => {
+      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
+    };
+  }, [spotifyToken]);
 
   useEffect(() => {
     return () => {
@@ -234,20 +281,14 @@ export default function App() {
       Alert.alert("Spotify Client ID", "Önce Spotify Client ID girin.");
       return;
     }
+    if (!spotifyRequest) {
+      Alert.alert("Spotify", "Yetkilendirme isteği hazır değil, tekrar deneyin.");
+      return;
+    }
 
-    const redirectUri = AuthSession.makeRedirectUri({ useProxy: true });
-    const authUrl =
-      `https://accounts.spotify.com/authorize?client_id=${settings.spotifyClientId.trim()}` +
-      `&response_type=token&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${encodeURIComponent("user-read-playback-state user-modify-playback-state user-read-currently-playing")}`;
-
-    const result = await AuthSession.startAsync({ authUrl });
-    if (result.type === "success" && result.params?.access_token) {
-      setSpotifyToken(result.params.access_token);
-      Alert.alert("Spotify", "Bağlantı başarılı.");
-      refreshSpotifyPlayback(result.params.access_token);
-      if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
-      spotifyPollRef.current = setInterval(() => refreshSpotifyPlayback(result.params.access_token), 5000);
+    const result = await spotifyPromptAsync();
+    if (result.type !== "success") {
+      Alert.alert("Spotify", "Bağlantı tamamlanmadı.");
     }
   };
 
@@ -284,7 +325,7 @@ export default function App() {
   const spotifyToggle = async () => {
     try {
       await spotifyApi(spotifyPlaying ? "/me/player/pause" : "/me/player/play", "PUT");
-      setTimeout(refreshSpotifyPlayback, 400);
+      setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
       Alert.alert("Spotify", "Oynatma kontrolü başarısız. Aktif cihaz seçili olmalı.");
     }
@@ -293,7 +334,7 @@ export default function App() {
   const spotifyNext = async () => {
     try {
       await spotifyApi("/me/player/next", "POST");
-      setTimeout(refreshSpotifyPlayback, 400);
+      setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
       Alert.alert("Spotify", "Sonraki parça başarısız.");
     }
@@ -302,7 +343,7 @@ export default function App() {
   const spotifyPrev = async () => {
     try {
       await spotifyApi("/me/player/previous", "POST");
-      setTimeout(refreshSpotifyPlayback, 400);
+      setTimeout(() => refreshSpotifyPlayback(), 400);
     } catch {
       Alert.alert("Spotify", "Önceki parça başarısız.");
     }

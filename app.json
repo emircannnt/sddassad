@@ -28,6 +28,7 @@
     },
     "plugins": [
       "expo-location"
-    ]
+    ],
+    "scheme": "taktmobile"
   }
 }
