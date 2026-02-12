@@ -24,16 +24,70 @@ const STORAGE = {
 };
 
 const MODES = {
-  toparlanma: { label: "Toparlanma", high: 15, low: 20, tag: "RECOVERY" },
-  yagYakimi: { label: "Yağ Yakımı", high: 20, low: 20, tag: "FAT BURN" },
-  kondisyon: { label: "Kondisyon", high: 20, low: 15, tag: "CARDIO" },
-  hizEsigi: { label: "Hız Eşiği", high: 20, low: 15, tag: "THRESHOLD" },
-  maksimumGuc: { label: "Maksimum Güç", high: 15, low: 20, tag: "MAX POWER" },
+  recovery: {
+    label: "Recovery",
+    tag: "TOPARLANMA",
+    workMin: 5,
+    workMax: 7,
+    restMin: 3,
+    restMax: 4,
+    workSec: 120,
+    restSec: 60,
+    coachTone: "Sakin ama disiplinli",
+  },
+  fatBurn: {
+    label: "Fat Burn",
+    tag: "YAĞ YAKIM",
+    workMin: 8,
+    workMax: 10,
+    restMin: 5,
+    restMax: 6,
+    workSec: 180,
+    restSec: 120,
+    coachTone: "Ritim odaklı",
+  },
+  conditioning: {
+    label: "Conditioning",
+    tag: "KONDİSYON",
+    workMin: 11,
+    workMax: 13,
+    restMin: 6,
+    restMax: 7,
+    workSec: 120,
+    restSec: 120,
+    coachTone: "Dayanıklılık koçu",
+  },
+  threshold: {
+    label: "Threshold",
+    tag: "HIZ EŞİĞİ",
+    workMin: 14,
+    workMax: 16,
+    restMin: 7,
+    restMax: 8,
+    workSec: 240,
+    restSec: 120,
+    coachTone: "Sert eşik koçu",
+  },
+  maxPower: {
+    label: "Max Power",
+    tag: "MAKS GÜÇ",
+    workMin: 17,
+    workMax: 22,
+    restMin: 4,
+    restMax: 5,
+    workSec: 30,
+    restSec: 90,
+    coachTone: "En sert mod",
+  },
 };
 
-const motivationPool = ["Çok iyi gidiyorsun!", "Ritmi koru!", "Harikasın, devam!", "Hedefe yaklaştın!"];
+const motivationPool = [
+  "Çok iyi gidiyorsun!",
+  "TAKT'ı yakaladın, devam et!",
+  "Ritmi bırakma!",
+  "Mükemmel disiplin!",
+];
 
-const bpmFromSpeed = (speed) => Math.round(Math.min(185, Math.max(95, 95 + speed * 4.2)));
 const caloriesFromSpeed = (speed, kg) => {
   const met = speed < 5 ? 3 : speed < 8 ? 6 : speed < 11 ? 9 : 12;
   return (met * 3.5 * kg) / 200;
@@ -72,12 +126,14 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [form, setForm] = useState({ firstName: "", lastName: "", height: "", weight: "", age: "28" });
   const [settings, setSettings] = useState({ voiceCoach: true, speedAnnounce: true, spotifyClientId: "" });
-  const [modeKey, setModeKey] = useState("yagYakimi");
+
+  const [modeKey, setModeKey] = useState("fatBurn");
   const [totalDurationMin, setTotalDurationMin] = useState("20");
 
   const [speedKmh, setSpeedKmh] = useState(0);
+  const [rawSpeedKmh, setRawSpeedKmh] = useState(0);
   const [distanceKm, setDistanceKm] = useState(0);
-  const [caloriePerMin, setCaloriePerMin] = useState(0);
+  const [calorieRate, setCalorieRate] = useState(0);
   const [totalCalories, setTotalCalories] = useState(0);
   const [bpm, setBpm] = useState(0);
 
@@ -87,6 +143,7 @@ export default function App() {
   const [phaseLeft, setPhaseLeft] = useState(0);
   const [sessionLeft, setSessionLeft] = useState(0);
   const [laps, setLaps] = useState(1);
+  const [coachLine, setCoachLine] = useState("Hazır");
 
   const [spotifyToken, setSpotifyToken] = useState(null);
   const [spotifyTrack, setSpotifyTrack] = useState("-");
@@ -97,18 +154,16 @@ export default function App() {
   const phaseTimeoutRef = useRef(null);
   const motivationRef = useRef(null);
   const spotifyPollRef = useRef(null);
-  const phaseRef = useRef("high");
-  const speedRef = useRef(0);
-  const calorieRateRef = useRef(0);
+
+  const currentPhaseRef = useRef("work");
   const runningRef = useRef(false);
   const pausedRef = useRef(false);
-
-  useEffect(() => {
-    speedRef.current = speedKmh;
-    calorieRateRef.current = caloriePerMin;
-    runningRef.current = running;
-    pausedRef.current = paused;
-  }, [speedKmh, caloriePerMin, running, paused]);
+  const speedRef = useRef(0);
+  const calorieRateRef = useRef(0);
+  const warningCooldownRef = useRef(0);
+  const lastGpsRef = useRef(null);
+  const transitionWarnedRef = useRef(false);
+  const smoothSpeedRef = useRef(0);
 
   const redirectUri = AuthSession.makeRedirectUri({ scheme: "taktmobile" });
   const [spotifyRequest, spotifyResponse, spotifyPromptAsync] = AuthSession.useAuthRequest(
@@ -121,12 +176,21 @@ export default function App() {
     { authorizationEndpoint: "https://accounts.spotify.com/authorize" },
   );
 
+  const mode = MODES[modeKey];
+
   const bmi = useMemo(() => {
     const h = Number(profile?.height || form.height);
     const w = Number(profile?.weight || form.weight);
     if (!h || !w) return 0;
     return w / ((h / 100) ** 2);
   }, [profile, form.height, form.weight]);
+
+  useEffect(() => {
+    runningRef.current = running;
+    pausedRef.current = paused;
+    speedRef.current = speedKmh;
+    calorieRateRef.current = calorieRate;
+  }, [running, paused, speedKmh, calorieRate]);
 
   useEffect(() => {
     (async () => {
@@ -161,7 +225,6 @@ export default function App() {
       setSpotifyPlaying(false);
       return;
     }
-
     refreshSpotifyPlayback(spotifyToken);
     if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
     spotifyPollRef.current = setInterval(() => refreshSpotifyPlayback(spotifyToken), 5000);
@@ -178,7 +241,8 @@ export default function App() {
     };
   }, []);
 
-  const speak = (text) => {
+  const speakCoach = (text) => {
+    setCoachLine(text);
     if (!settings.voiceCoach) return;
     Speech.speak(text, { language: "tr-TR", rate: 1, pitch: 1.05 });
   };
@@ -194,12 +258,44 @@ export default function App() {
 
     if (watchRef.current) watchRef.current.remove();
     watchRef.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 1 },
+      {
+        accuracy: Location.Accuracy.BestForNavigation,
+        timeInterval: 1000,
+        distanceInterval: 1,
+      },
       (loc) => {
-        const kmh = (loc.coords.speed || 0) * 3.6;
-        setSpeedKmh(kmh);
-        setBpm(bpmFromSpeed(kmh));
-        setCaloriePerMin(caloriesFromSpeed(kmh, weight));
+        const nowTs = loc.timestamp;
+        let instantKmh = (loc.coords.speed ?? 0) * 3.6;
+
+        if (!instantKmh && lastGpsRef.current) {
+          const prev = lastGpsRef.current;
+          const dt = Math.max((nowTs - prev.ts) / 1000, 0.5);
+          const dLat = ((loc.coords.latitude - prev.lat) * Math.PI) / 180;
+          const dLon = ((loc.coords.longitude - prev.lon) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos((prev.lat * Math.PI) / 180) *
+              Math.cos((loc.coords.latitude * Math.PI) / 180) *
+              Math.sin(dLon / 2) ** 2;
+          const km = 6371 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+          instantKmh = (km / dt) * 3600;
+        }
+
+        const alpha = 0.35;
+        smoothSpeedRef.current = smoothSpeedRef.current
+          ? smoothSpeedRef.current * (1 - alpha) + instantKmh * alpha
+          : instantKmh;
+
+        setRawSpeedKmh(instantKmh);
+        setSpeedKmh(smoothSpeedRef.current);
+        setBpm(Math.round(Math.min(185, Math.max(95, 95 + smoothSpeedRef.current * 4.2))));
+        setCalorieRate(caloriesFromSpeed(smoothSpeedRef.current, weight));
+
+        lastGpsRef.current = {
+          lat: loc.coords.latitude,
+          lon: loc.coords.longitude,
+          ts: nowTs,
+        };
       },
     );
   };
@@ -231,53 +327,94 @@ export default function App() {
     motivationRef.current = null;
   };
 
-  const runPhase = (newPhase) => {
-    const mode = MODES[modeKey];
-    const sec = newPhase === "high" ? mode.high : mode.low;
-    phaseRef.current = newPhase;
-    setPhase(newPhase === "high" ? "HIZLAN" : "YAVAŞLA");
+  const switchPhase = (to) => {
+    currentPhaseRef.current = to;
+    const sec = to === "work" ? mode.workSec : mode.restSec;
+    setPhase(to === "work" ? "HIZLAN" : "YAVAŞLA");
     setPhaseLeft(sec);
-    speak(newPhase === "high" ? "Hızlan" : "Yavaşla");
-
-    if (phaseTimeoutRef.current) clearTimeout(phaseTimeoutRef.current);
-    phaseTimeoutRef.current = setTimeout(() => {
-      if (!runningRef.current || pausedRef.current) return;
-      if (newPhase === "low") setLaps((v) => v + 1);
-      runPhase(newPhase === "high" ? "low" : "high");
-    }, sec * 1000);
+    transitionWarnedRef.current = false;
+    warningCooldownRef.current = 0;
+    speakCoach(to === "work" ? "Hızlan, hedef hıza çık!" : "Yavaşla, kontrollü toparlan.");
   };
 
   const startWorkout = () => {
     if (!profile) return;
     stopWorkoutInternal();
+
+    const totalSec = Math.max(60, Number(totalDurationMin || 20) * 60);
     setScreen("workout");
     setRunning(true);
     setPaused(false);
     setDistanceKm(0);
     setTotalCalories(0);
-    setLaps(1);
-
-    const totalSec = Math.max(60, Number(totalDurationMin || 20) * 60);
     setSessionLeft(totalSec);
-    runPhase("high");
+    setLaps(1);
+    switchPhase("work");
 
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(v - 1, 0));
-      setSessionLeft((v) => {
-        if (v <= 1) {
-          stopWorkout();
-          return 0;
+      const inWork = currentPhaseRef.current === "work";
+      const targetMet = speedRef.current >= mode.workMin;
+
+      let decremented = false;
+
+      setPhaseLeft((v) => {
+        if (v <= 0) return 0;
+
+        if (inWork) {
+          if (!targetMet) return v;
+          decremented = true;
+          return v - 1;
         }
+
+        decremented = true;
         return v - 1;
       });
-      setDistanceKm((d) => d + speedRef.current / 3600);
-      setTotalCalories((c) => c + calorieRateRef.current / 60);
+
+      if (inWork && !targetMet) {
+        warningCooldownRef.current += 1;
+        speakCoach(`Yavaşladın! TAKT'ı yakala: en az ${mode.workMin} km/sa.`);
+        if (warningCooldownRef.current >= 6) {
+          speakCoach(`Süre durdu. ${mode.workMin} km/sa hıza çık.`);
+          warningCooldownRef.current = 0;
+        }
+      }
+
+      if (decremented) {
+        setSessionLeft((v) => {
+          if (v <= 1) {
+            stopWorkout();
+            return 0;
+          }
+          return v - 1;
+        });
+
+        setDistanceKm((d) => d + speedRef.current / 3600);
+        setTotalCalories((c) => c + calorieRateRef.current / 60);
+      }
+
+      setPhaseLeft((current) => {
+        if (!transitionWarnedRef.current && current > 0 && current <= 5) {
+          transitionWarnedRef.current = true;
+          speakCoach("3, 2, 1... Faz değişiyor.");
+        }
+
+        if (current <= 0) {
+          if (currentPhaseRef.current === "work") {
+            switchPhase("rest");
+          } else {
+            setLaps((l) => l + 1);
+            switchPhase("work");
+          }
+          return currentPhaseRef.current === "work" ? mode.workSec : mode.restSec;
+        }
+        return current;
+      });
     }, 1000);
 
     motivationRef.current = setInterval(() => {
       const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
-      speak(msg);
-      if (settings.speedAnnounce) speak(`Hız ${speedRef.current.toFixed(1)} kilometre saat`);
+      speakCoach(msg);
+      if (settings.speedAnnounce) speakCoach(`Anlık hız ${speedRef.current.toFixed(1)} kilometre saat.`);
     }, 20000);
   };
 
@@ -291,25 +428,67 @@ export default function App() {
   const resumeWorkout = () => {
     if (!runningRef.current) return;
     setPaused(false);
-    runPhase(phaseRef.current);
+    speakCoach("Antrenman devam ediyor.");
+    startWorkoutFromCurrentState();
+  };
+
+  const startWorkoutFromCurrentState = () => {
+    stopWorkoutInternal();
 
     tickerRef.current = setInterval(() => {
-      setPhaseLeft((v) => Math.max(v - 1, 0));
-      setSessionLeft((v) => {
-        if (v <= 1) {
-          stopWorkout();
-          return 0;
-        }
+      const inWork = currentPhaseRef.current === "work";
+      const targetMet = speedRef.current >= mode.workMin;
+      let decremented = false;
+
+      setPhaseLeft((v) => {
+        if (v <= 0) return 0;
+        if (inWork && !targetMet) return v;
+        decremented = true;
         return v - 1;
       });
-      setDistanceKm((d) => d + speedRef.current / 3600);
-      setTotalCalories((c) => c + calorieRateRef.current / 60);
+
+      if (inWork && !targetMet) {
+        warningCooldownRef.current += 1;
+        if (warningCooldownRef.current >= 6) {
+          speakCoach(`Süre durdu. ${mode.workMin} km/sa hıza çık.`);
+          warningCooldownRef.current = 0;
+        }
+      }
+
+      if (decremented) {
+        setSessionLeft((v) => {
+          if (v <= 1) {
+            stopWorkout();
+            return 0;
+          }
+          return v - 1;
+        });
+        setDistanceKm((d) => d + speedRef.current / 3600);
+        setTotalCalories((c) => c + calorieRateRef.current / 60);
+      }
+
+      setPhaseLeft((current) => {
+        if (!transitionWarnedRef.current && current > 0 && current <= 5) {
+          transitionWarnedRef.current = true;
+          speakCoach("3, 2, 1... Faz değişiyor.");
+        }
+        if (current <= 0) {
+          if (currentPhaseRef.current === "work") {
+            switchPhase("rest");
+          } else {
+            setLaps((l) => l + 1);
+            switchPhase("work");
+          }
+          return currentPhaseRef.current === "work" ? mode.workSec : mode.restSec;
+        }
+        return current;
+      });
     }, 1000);
 
     motivationRef.current = setInterval(() => {
       const msg = motivationPool[Math.floor(Math.random() * motivationPool.length)];
-      speak(msg);
-      if (settings.speedAnnounce) speak(`Hız ${speedRef.current.toFixed(1)} kilometre saat`);
+      speakCoach(msg);
+      if (settings.speedAnnounce) speakCoach(`Anlık hız ${speedRef.current.toFixed(1)} kilometre saat.`);
     }, 20000);
   };
 
@@ -399,8 +578,6 @@ export default function App() {
     if (spotifyPollRef.current) clearInterval(spotifyPollRef.current);
   };
 
-  const mode = MODES[modeKey];
-
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -427,14 +604,26 @@ export default function App() {
 
         {screen === "home" && profile && (
           <>
-            <View style={styles.topRow}><Text style={styles.logo}>⚡ TAKT</Text><View><Text style={styles.intervalText}>MODE SELECTED</Text><Text style={styles.intervalSub}>{mode.label.toUpperCase()} • OUTDOOR</Text></View></View>
-            <RingGauge valueText={speedKmh.toFixed(1)} subtitle="CURRENT SPEED" status={`BMI ${bmi.toFixed(1)} / ${bmiCategory(bmi)}`} />
+            <View style={styles.topRow}>
+              <Text style={styles.logo}>⚡ TAKT</Text>
+              <View>
+                <Text style={styles.intervalText}>MODE SELECTED</Text>
+                <Text style={styles.intervalSub}>{mode.label.toUpperCase()} • {mode.coachTone}</Text>
+              </View>
+            </View>
+
+            <RingGauge
+              valueText={speedKmh.toFixed(1)}
+              subtitle="CURRENT SPEED"
+              status={`Target ${mode.workMin}-${mode.workMax} km/sa | GPS ${rawSpeedKmh.toFixed(1)} km/sa`}
+            />
 
             <View style={styles.rowWrap}>
               {Object.entries(MODES).map(([key, m]) => (
                 <Pressable key={key} style={[styles.modeCard, modeKey === key && styles.modeCardActive]} onPress={() => setModeKey(key)}>
                   <Text style={styles.modeCardTitle}>{m.label}</Text>
-                  <Text style={styles.modeCardSub}>{m.high}/{m.low} sn</Text>
+                  <Text style={styles.modeCardSub}>Work {formatTimer(m.workSec)} • Rest {formatTimer(m.restSec)}</Text>
+                  <Text style={styles.modeCardSub}>{m.workMin}-{m.workMax} / {m.restMin}-{m.restMax} km/sa</Text>
                 </Pressable>
               ))}
             </View>
@@ -450,6 +639,7 @@ export default function App() {
               <TextInput style={styles.input} keyboardType="numeric" value={totalDurationMin} onChangeText={setTotalDurationMin} placeholder="20" placeholderTextColor="#7d95a9" />
               <View style={styles.row}><Text style={styles.label}>Voice Coach</Text><Switch value={settings.voiceCoach} onValueChange={(v) => saveSettings({ ...settings, voiceCoach: v })} /></View>
               <View style={styles.row}><Text style={styles.label}>Speed Announce</Text><Switch value={settings.speedAnnounce} onValueChange={(v) => saveSettings({ ...settings, speedAnnounce: v })} /></View>
+              <Text style={styles.coachLine}>Koç: {coachLine}</Text>
             </View>
 
             <View style={styles.card}>
@@ -471,8 +661,15 @@ export default function App() {
 
         {screen === "workout" && profile && (
           <>
-            <View style={styles.topRow}><Text style={styles.logo}>⚡ TAKT</Text><View><Text style={styles.intervalText}>INTERVAL {laps}</Text><Text style={styles.intervalSub}>{mode.tag}</Text></View></View>
-            <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={formatTimer(sessionLeft)} />
+            <View style={styles.topRow}>
+              <Text style={styles.logo}>⚡ TAKT</Text>
+              <View>
+                <Text style={styles.intervalText}>INTERVAL {laps}</Text>
+                <Text style={styles.intervalSub}>{mode.tag}</Text>
+              </View>
+            </View>
+
+            <RingGauge valueText={speedKmh.toFixed(1)} subtitle={phase} status={`Target ≥ ${mode.workMin} km/sa | ${formatTimer(sessionLeft)}`} />
 
             <View style={styles.metricsGrid}>
               <View style={styles.metricBox}><Text style={styles.metricNum}>{bpm || "--"}</Text><Text style={styles.metricLabel}>BPM</Text></View>
@@ -483,7 +680,8 @@ export default function App() {
             <View style={styles.card}>
               <Text style={styles.label}>Phase Left: {phaseLeft}s</Text>
               <Text style={styles.label}>Session Left: {formatTimer(sessionLeft)}</Text>
-              <Text style={styles.label}>Calorie Rate: {caloriePerMin.toFixed(2)} kcal/min</Text>
+              <Text style={styles.label}>Calorie Rate: {calorieRate.toFixed(2)} kcal/min</Text>
+              <Text style={styles.coachLine}>Koç: {coachLine}</Text>
             </View>
 
             <View style={styles.rowWrap}>
@@ -580,6 +778,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   label: { color: "#A2BDD0", fontWeight: "700" },
+  coachLine: { color: "#23B6FF", fontWeight: "800" },
   spotifyTrack: { color: "#A2BDD0", fontSize: 13, marginTop: 4 },
 
   modeCard: {
